@@ -5,17 +5,11 @@ const QRCode = require("qrcode");
 const admin = require("firebase-admin");
 const axios = require("axios");
 
-// ---------- Firebase initialization (works on Render) ----------
-let serviceAccount;
-try {
-  serviceAccount = require("./firebase-key.json");
-  console.log("Loaded firebase-key.json from file");
-} catch (e) {
-  console.log("firebase-key.json not found, using environment variable");
-  serviceAccount = JSON.parse(process.env.FIREBASE_KEY);
-}
+const { readFileSync } = require('fs');
+const serviceAccount = JSON.parse(readFileSync('/etc/secrets/firebase-key.json', 'utf8'));
 admin.initializeApp({ credential: admin.credential.cert(serviceAccount) });
 const db = admin.firestore();
+console.log("Firebase initialized using Render secret file");
 
 const app = express();
 app.use(cors());
