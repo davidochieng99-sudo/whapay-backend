@@ -5,11 +5,31 @@ const QRCode = require("qrcode");
 const admin = require("firebase-admin");
 const axios = require("axios");
 
-const { readFileSync } = require('fs');
-const serviceAccount = JSON.parse(readFileSync('/etc/secrets/firebase-key.json', 'utf8'));
+const { readFileSync, existsSync } = require('fs');
+
+let serviceAccount;
+// Option 1: Use environment variable (preferred for Render)
+if (process.env.FIREBASE_ADMIN_SDK_KEY) {
+  serviceAccount = JSON.parse(process.env.FIREBASE_ADMIN_SDK_KEY);
+  console.log("Firebase: using environment variable FIREBASE_ADMIN_SDK_KEY");
+}
+// Option 2: Use Render secret file path
+else if (existsSync('/etc/secrets/firebase-key.json')) {
+  serviceAccount = JSON.parse(readFileSync('/etc/secrets/firebase-key.json', 'utf8'));
+  console.log("Firebase: using Render secret file");
+}
+// Option 3: Local file for development (only if your local file exists)
+else if (existsSync('./firebase-key.json')) {
+  serviceAccount = require('./firebase-key.json');
+  console.log("Firebase: using local firebase-key.json");
+}
+else {
+  throw new Error("No Firebase credentials found. Set FIREBASE_ADMIN_SDK_KEY env var or add secret file.");
+}
+
 admin.initializeApp({ credential: admin.credential.cert(serviceAccount) });
 const db = admin.firestore();
-console.log("Firebase initialized using Render secret file");
+console.log("✅ Firebase connected successfully");
 
 const app = express();
 app.use(cors());
