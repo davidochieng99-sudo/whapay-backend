@@ -4,6 +4,7 @@ require("dotenv").config();
 const QRCode = require("qrcode");
 const admin = require("firebase-admin");
 const axios = require("axios");
+const { Idempotency } = require('express-idempotency');
 
 const { readFileSync, existsSync } = require('fs');
 
