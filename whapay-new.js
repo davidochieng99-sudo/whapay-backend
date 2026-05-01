@@ -4,7 +4,7 @@ require("dotenv").config();
 const QRCode = require("qrcode");
 const admin = require("firebase-admin");
 const axios = require("axios");
-const { Idempotency } = require('express-idempotency');
+
 
 const { readFileSync, existsSync } = require('fs');
 
@@ -36,10 +36,7 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 app.use(express.static("public"));
-app.use(Idempotency({
-  store: new Map(),
-  headerName: 'Idempotency-Key',
-}));
+
 
 // Helper: generate next DK code (DK0001, DK0002, ...)
 async function getNextDkCode() {
