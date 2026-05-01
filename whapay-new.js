@@ -343,24 +343,43 @@ app.post("/api/register", async (req, res) => {
 app.post("/api/pay-offline", async (req, res) => {
   try {
     const { merchantCode, customerPhone, customerName, amount, description, paymentMethod } = req.body;
+    const idempotencyKey = req.idempotencyKey;
+    console.log(`Idempotency key: ${idempotencyKey}`);
+
     const merchants = await db.collection("users").where("dkCode", "==", merchantCode).get();
     if (merchants.empty) throw new Error("Merchant not found");
     const merchant = merchants.docs[0];
     const merchantData = merchant.data();
+
     const customer = await registerOrGetUser(customerPhone, customerName, "customer");
     const transactionId = "TXN_" + Date.now();
+
     await saveTransaction({
-      transactionId, merchantCode: merchantData.dkCode, merchantName: merchantData.fullname,
-      customerCode: customer.dkCode, customerName: customer.fullname, amount, description,
-      status: "completed", paymentMethod
+      transactionId,
+      merchantCode: merchantData.dkCode,
+      merchantName: merchantData.fullname,
+      customerCode: customer.dkCode,
+      customerName: customer.fullname,
+      amount,
+      description,
+      status: "completed",
+      paymentMethod
     });
+
     await sendConfirmations({
-      transactionId, merchant: { fullname: merchantData.fullname, dkCode: merchantData.dkCode, phoneNumber: merchantData.phoneNumber },
+      transactionId,
+      merchant: { fullname: merchantData.fullname, dkCode: merchantData.dkCode, phoneNumber: merchantData.phoneNumber },
       customer: { fullname: customer.fullname, dkCode: customer.dkCode, phoneNumber: customer.phoneNumber },
-      amount, description, status: "success", reason: null, paymentMethod
+      amount,
+      description,
+      status: "success",
+      reason: null,
+      paymentMethod
     });
+
     res.json({ success: true, transactionId });
   } catch (error) {
+    console.error(error);
     res.json({ success: false, error: error.message, reason: error.message });
   }
 });
