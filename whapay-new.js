@@ -36,6 +36,31 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 app.use(express.static("public"));
+// Simple idempotency store (in memory, resets on restart)
+const idempotencyStore = new Map();
+
+app.use((req, res, next) => {
+  // Only apply to payment endpoints
+  if (req.path === '/api/pay-offline' && req.method === 'POST') {
+    // Create a unique key from the request body
+    const { merchantCode, customerPhone, amount, description } = req.body;
+    const key = `${merchantCode}_${customerPhone}_${amount}_${description || ''}`;
+    
+    // Check if already processed
+    if (idempotencyStore.has(key)) {
+      console.log(`⛔ Duplicate payment blocked: ${key}`);
+      return res.json({ success: false, error: "Duplicate payment request ignored." });
+    }
+    
+    // Store it and continue
+    idempotencyStore.set(key, Date.now());
+    // Optional: clean up old keys after 24 hours
+    setTimeout(() => idempotencyStore.delete(key), 24 * 60 * 60 * 1000);
+    
+    req.idempotencyKey = key; // attach for logging
+  }
+  next();
+});
 
 
 // Helper: generate next DK code (DK0001, DK0002, ...)
