@@ -400,6 +400,87 @@ app.post("/api/register", async (req, res) => {
   }
 });
 
+// Register & Pay in one step (combines user creation and payment initialization)
+app.post("/api/register-pay", async (req, res) => {
+  try {
+    const { fullname, phoneNumber, amount, paymentMethod, registerUser } = req.body;
+
+    // Validate inputs
+    if (!fullname || !phoneNumber || !amount) {
+      return res.status(400).json({ success: false, error: "Missing required fields" });
+    }
+
+    // Normalize phone number
+    let normalizedPhone = phoneNumber.replace(/^0+/, "254");
+    if (!normalizedPhone.startsWith("254")) normalizedPhone = "254" + normalizedPhone;
+
+    // Register or get existing user
+    let user = null;
+    let isNewUser = false;
+    const existingUsers = await db.collection("users").where("phoneNumber", "==", normalizedPhone).get();
+    if (existingUsers.empty && registerUser === true) {
+      // Create new user
+      const dkCode = await getNextDkCode();
+      const qrData = `https://whapay-backend.onrender.com/pay?code=${dkCode}`;
+      const qrImage = await generateQRCode(qrData);
+      const newUser = {
+        phoneNumber: normalizedPhone,
+        fullname: fullname,
+        dkCode,
+        qrCodeUrl: qrImage,
+        userType: "customer",
+        balance: 0,
+        createdAt: new Date().toISOString(),
+      };
+      const docRef = await db.collection("users").add(newUser);
+      user = { id: docRef.id, ...newUser };
+      isNewUser = true;
+    } else if (!existingUsers.empty) {
+      user = existingUsers.docs[0].data();
+      user.id = existingUsers.docs[0].id;
+    } else {
+      // User doesn't exist and registerUser is false – treat as guest
+      user = null;
+    }
+
+    // Create a transaction record with status "pending"
+    const transactionId = "TXN_" + Date.now();
+    const transactionData = {
+      transactionId,
+      customerName: fullname,
+      customerPhone: normalizedPhone,
+      amount: parseFloat(amount),
+      paymentMethod,
+      status: "pending",
+      createdAt: new Date().toISOString(),
+      userCreated: isNewUser,
+    };
+    await db.collection("transactions").add(transactionData);
+
+    // TODO: After Flutterwave approval, replace this mock with actual payment initialization
+    // For now, simulate a payment link
+    const mockPaymentLink = `https://whapay-backend.onrender.com/pay?amount=${amount}&phone=${normalizedPhone}`;
+
+    // Prepare response
+    const response = {
+      success: true,
+      transactionId,
+      paymentLink: mockPaymentLink,
+      user: user ? {
+        dkCode: user.dkCode,
+        qrCodeUrl: user.qrCodeUrl,
+        fullname: user.fullname,
+        phoneNumber: user.phoneNumber,
+      } : null,
+      isNewUser,
+    };
+
+    res.json(response);
+  } catch (error) {
+    console.error("Register-pay error:", error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
 app.post("/api/pay-offline", async (req, res) => {
   try {
     const { merchantCode, customerPhone, customerName, amount, description, paymentMethod } = req.body;
