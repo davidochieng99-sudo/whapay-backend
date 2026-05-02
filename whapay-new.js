@@ -420,6 +420,10 @@ app.get("/api/stats", async (req, res) => {
     res.status(500).json({ success: false, error: error.message });
   }
 });
+
+app.get("/api/test", (req, res) => {
+  res.json({ success: true, message: "Test endpoint works" });
+});
 // Flutterwave webhook endpoint (placeholder)
 app.post("/api/flw-webhook", async (req, res) => {
   console.log("📥 Webhook received from Flutterwave:", req.body);
