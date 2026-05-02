@@ -389,6 +389,37 @@ async function sendLink() {
 </html>`);
 });
 
+// Get live stats from Firestore
+app.get("/api/stats", async (req, res) => {
+  try {
+    // Count merchants (users with userType "merchant")
+    const merchantsSnapshot = await db.collection("users").where("userType", "==", "merchant").get();
+    const totalMerchants = merchantsSnapshot.size;
+
+    // Count all transactions
+    const transactionsSnapshot = await db.collection("transactions").get();
+    const totalTransactions = transactionsSnapshot.size;
+
+    // Sum completed transaction amounts
+    let totalVolume = 0;
+    transactionsSnapshot.forEach(doc => {
+      const data = doc.data();
+      if (data.status === "completed" || data.status === "success") {
+        totalVolume += (data.amount || 0);
+      }
+    });
+
+    res.json({
+      success: true,
+      totalMerchants,
+      totalTransactions,
+      totalVolume
+    });
+  } catch (error) {
+    console.error("Stats error:", error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
 // Flutterwave webhook endpoint (placeholder)
 app.post("/api/flw-webhook", async (req, res) => {
   console.log("📥 Webhook received from Flutterwave:", req.body);
