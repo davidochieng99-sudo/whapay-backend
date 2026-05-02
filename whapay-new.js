@@ -36,6 +36,10 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 app.use(express.static("public"));
+// Test route – remove later
+app.get("/ping", (req, res) => {
+  res.send("pong");
+});
 // Simple in-memory rate limiter (resets on server restart)
 const rateLimitStore = new Map();
 
@@ -389,41 +393,7 @@ async function sendLink() {
 </html>`);
 });
 
-// Get live stats from Firestore
-app.get("/api/stats", async (req, res) => {
-  try {
-    // Count merchants (users with userType "merchant")
-    const merchantsSnapshot = await db.collection("users").where("userType", "==", "merchant").get();
-    const totalMerchants = merchantsSnapshot.size;
 
-    // Count all transactions
-    const transactionsSnapshot = await db.collection("transactions").get();
-    const totalTransactions = transactionsSnapshot.size;
-
-    // Sum completed transaction amounts
-    let totalVolume = 0;
-    transactionsSnapshot.forEach(doc => {
-      const data = doc.data();
-      if (data.status === "completed" || data.status === "success") {
-        totalVolume += (data.amount || 0);
-      }
-    });
-
-    res.json({
-      success: true,
-      totalMerchants,
-      totalTransactions,
-      totalVolume
-    });
-  } catch (error) {
-    console.error("Stats error:", error);
-    res.status(500).json({ success: false, error: error.message });
-  }
-});
-
-app.get("/api/test", (req, res) => {
-  res.json({ success: true, message: "Test endpoint works" });
-});
 // Flutterwave webhook endpoint (placeholder)
 app.post("/api/flw-webhook", async (req, res) => {
   console.log("📥 Webhook received from Flutterwave:", req.body);
