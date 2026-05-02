@@ -389,6 +389,18 @@ async function sendLink() {
 </html>`);
 });
 
+// Flutterwave webhook endpoint (placeholder)
+app.post("/api/flw-webhook", async (req, res) => {
+  console.log("📥 Webhook received from Flutterwave:", req.body);
+  
+  // TODO: After Flutterwave approval, we will:
+  // 1. Verify the signature using your secret hash
+  // 2. Update transaction status in Firestore
+  // 3. Send confirmation to customer/merchant
+  
+  // Always respond with 200 to acknowledge receipt
+  res.status(200).json({ status: "success", message: "Webhook received" });
+});
 // ---------- API endpoints ----------
 app.post("/api/register", async (req, res) => {
   try {
