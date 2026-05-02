@@ -36,6 +36,44 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 app.use(express.static("public"));
+// Simple in-memory rate limiter (resets on server restart)
+const rateLimitStore = new Map();
+
+function rateLimiter(req, res, next) {
+  // Only apply to POST payment endpoints
+  if (req.path === '/api/pay-offline' && req.method === 'POST') {
+    const ip = req.ip || req.connection.remoteAddress;
+    const now = Date.now();
+    const windowMs = 60 * 1000; // 1 minute
+    const maxRequests = 5;
+
+    if (!rateLimitStore.has(ip)) {
+      rateLimitStore.set(ip, [now]);
+      next();
+      return;
+    }
+
+    const timestamps = rateLimitStore.get(ip);
+    // Remove timestamps older than windowMs
+    const recent = timestamps.filter(t => now - t < windowMs);
+    
+    if (recent.length >= maxRequests) {
+      res.status(429).json({
+        success: false,
+        error: "Too many requests. Please try again later."
+      });
+      return;
+    }
+
+    recent.push(now);
+    rateLimitStore.set(ip, recent);
+  }
+  next();
+}
+
+// Apply the rate limiter globally (or specifically to your route)
+app.use(rateLimiter);
+
 // Simple idempotency store (in memory, resets on restart)
 const idempotencyStore = new Map();
 
