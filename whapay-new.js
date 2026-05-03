@@ -103,6 +103,77 @@ app.use((req, res, next) => {
   }
   next();
 });
+
+// Sync offline pending items (from frontend localforage)
+app.post("/api/sync", async (req, res) => {
+  try {
+    const { items } = req.body;
+    if (!items || !Array.isArray(items)) {
+      return res.status(400).json({ success: false, error: "Missing items array" });
+    }
+
+    const results = [];
+    for (const item of items) {
+      // Skip if already marked synced (frontend should only send unsynced)
+      if (item.synced) continue;
+
+      // Generate idempotency key to avoid duplicate processing
+      const syncKey = `sync_${item.type}_${item.createdAt || Date.now()}_${item.phone || item.customerPhone}`;
+      if (idempotencyStore.has(syncKey)) {
+        results.push({ key: syncKey, status: "skipped", reason: "duplicate" });
+        continue;
+      }
+      idempotencyStore.set(syncKey, Date.now());
+
+      if (item.type === "payment" || item.type === "member_code") {
+        await db.collection("transactions").add({
+          customer: item.name,
+          customerPhone: item.customerPhone || item.phone,
+          amount: item.amount,
+          method: item.method,
+          status: "completed",
+          merchantCode: item.merchantCode,
+          description: item.description,
+          syncedAt: new Date().toISOString(),
+          createdAt: new Date(item.createdAt || Date.now())
+        });
+        results.push({ key: syncKey, status: "success", type: "payment" });
+      }
+      else if (item.type === "registration") {
+        // Create user (optional: store memberCode)
+        const dkCode = await getNextDkCode();
+        const qrData = `https://whapay-backend.onrender.com/pay?code=${dkCode}`;
+        const qrImage = await generateQRCode(qrData);
+        await db.collection("users").add({
+          fullName: item.name,
+          phone: item.phone,
+          memberCode: dkCode,
+          qrCodeUrl: qrImage,
+          userType: "customer",
+          status: "active",
+          createdAt: new Date(item.createdAt || Date.now())
+        });
+        if (item.amount) {
+          await db.collection("transactions").add({
+            customer: item.name,
+            customerPhone: item.phone,
+            amount: item.amount,
+            method: item.method,
+            status: "completed",
+            syncedAt: new Date().toISOString(),
+            createdAt: new Date(item.createdAt || Date.now())
+          });
+        }
+        results.push({ key: syncKey, status: "success", type: "registration" });
+      }
+    }
+
+    res.json({ success: true, results });
+  } catch (error) {
+    console.error("Sync error:", error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
 // Get live stats from Firestore
 app.get("/api/stats", async (req, res) => {
   try {
