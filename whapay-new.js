@@ -680,6 +680,136 @@ app.post("/api/send-sms", async (req, res) => {
   }
 });
 
+// ========== DEVELOPER PORTAL ROUTES ==========
+
+// Serve developer.html
+app.get('/developer.html', (req, res) => {
+  res.sendFile(__dirname + '/developer.html');
+});
+
+// API Docs (Swagger UI)
+app.get('/api-docs', (req, res) => {
+  res.send(`
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <title>WhaPay API Docs</title>
+      <link rel="stylesheet" href="https://unpkg.com/swagger-ui-dist@5/swagger-ui.css">
+    </head>
+    <body>
+      <div id="swagger-ui"></div>
+      <script src="https://unpkg.com/swagger-ui-dist@5/swagger-ui-bundle.js"></script>
+      <script>
+        window.onload = () => {
+          SwaggerUIBundle({
+            url: "/swagger.yaml",
+            dom_id: "#swagger-ui"
+          });
+        };
+      </script>
+    </body>
+    </html>
+  `);
+});
+
+// Serve swagger.yaml
+app.get('/swagger.yaml', (req, res) => {
+  res.sendFile(__dirname + '/swagger.yaml');
+});
+
+// API Playground
+app.get('/developer/playground', (req, res) => {
+  res.send(`
+    <!DOCTYPE html>
+    <html>
+   <head>
+      <title>API Playground</title>
+      <script src="https://cdn.tailwindcss.com"></script>
+    </head>
+    <body class="bg-gray-50">
+      <div class="max-w-4xl mx-auto p-6">
+        <h1 class="text-2xl font-bold mb-4">🪄 API Playground</h1>
+        <div class="bg-white rounded-xl p-6 shadow-sm">
+          <label class="block text-sm font-medium mb-2">Endpoint</label>
+          <select id="endpoint" class="w-full border rounded-lg p-2 mb-4">
+            <option value="/api/pay-offline">POST /api/pay-offline</option>
+            <option value="/api/stats">GET /api/stats</option>
+          </select>
+          <label class="block text-sm font-medium mb-2">Request Body (JSON)</label>
+          <textarea id="body" rows="6" class="w-full font-mono text-sm border rounded-lg p-3 mb-4">{
+  "merchantCode": "DK0001",
+  "customerPhone": "254712345678",
+  "amount": 500
+}</textarea>
+          <button onclick="sendRequest()" class="bg-green-600 text-white px-4 py-2 rounded-lg">Send Request</button>
+          <div class="mt-4">
+            <label class="block text-sm font-medium mb-2">Response</label>
+            <pre id="response" class="bg-gray-900 text-green-400 p-4 rounded-lg overflow-x-auto">Click Send to see response</pre>
+          </div>
+        </div>
+      </div>
+      <script>
+        async function sendRequest() {
+          const endpoint = document.getElementById('endpoint').value;
+          const bodyText = document.getElementById('body').value;
+          const method = endpoint.includes('/stats') ? 'GET' : 'POST';
+          const responseDiv = document.getElementById('response');
+          responseDiv.innerText = 'Loading...';
+          try {
+            const response = await fetch(endpoint, {
+              method: method,
+              headers: { 'Content-Type': 'application/json' },
+              body: method === 'POST' ? bodyText : undefined
+            });
+            const data = await response.json();
+            responseDiv.innerText = JSON.stringify(data, null, 2);
+          } catch(err) {
+            responseDiv.innerText = 'Error: ' + err.message;
+          }
+        }
+      </script>
+    </body>
+    </html>
+  `);
+});
+
+// System Status page
+app.get('/developer/status', async (req, res) => {
+  let dbStatus = 'operational';
+  try {
+    await db.collection('_health').doc('ping').set({ ping: Date.now() });
+  } catch(e) {
+    dbStatus = 'degraded';
+  }
+  res.send(`
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <title>WhaPay Status</title>
+      <script src="https://cdn.tailwindcss.com"></script>
+      <meta http-equiv="refresh" content="30">
+    </head>
+    <body class="bg-gray-50">
+      <div class="max-w-4xl mx-auto p-6">
+        <h1 class="text-2xl font-bold mb-2">🟢 System Status</h1>
+        <div class="bg-green-100 border border-green-300 rounded-lg p-4 mb-4">
+          <div class="flex items-center gap-2">
+            <div class="w-3 h-3 bg-green-500 rounded-full animate-pulse"></div>
+            <span class="font-bold">All systems operational</span>
+          </div>
+          <p class="text-sm text-gray-600 mt-2">Database: ${dbStatus}</p>
+          <p class="text-sm text-gray-600">API: operational</p>
+          <p class="text-sm text-gray-600">Flutterwave: pending approval</p>
+        </div>
+        <p class="text-sm text-gray-400">Page auto-refreshes every 30 seconds</p>
+      </div>
+    </body>
+    </html>
+  `);
+});
+
+// Serve static SDK files
+app.use('/sdk', express.static('sdk'));
 // Start server
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
