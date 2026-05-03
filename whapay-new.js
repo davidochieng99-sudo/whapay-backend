@@ -231,6 +231,148 @@ async function generateQRCode(data) {
   }
 }
 
+
+
+// ========== WHATSAPP BUSINESS OS (STOREFRONT) ==========
+
+// Add/Update product
+app.post("/api/merchant/product", async (req, res) => {
+  try {
+    const { merchantCode, name, price, description, imageUrl } = req.body;
+    if (!merchantCode || !name || !price) {
+      return res.status(400).json({ success: false, error: "Missing required fields" });
+    }
+    
+    const merchants = await db.collection("users").where("dkCode", "==", merchantCode).get();
+    if (merchants.empty) return res.status(404).json({ error: "Merchant not found" });
+    
+    const product = {
+      merchantCode,
+      name,
+      price: parseFloat(price),
+      description: description || "",
+      imageUrl: imageUrl || "",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+    
+    const docRef = await db.collection("products").add(product);
+    res.json({ success: true, productId: docRef.id, product });
+  } catch (error) {
+    console.error("Add product error:", error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Get merchant's products
+app.get("/api/merchant/products", async (req, res) => {
+  try {
+    const { merchantCode } = req.query;
+    const products = await db.collection("products").where("merchantCode", "==", merchantCode).get();
+    res.json(products.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Delete product
+app.delete("/api/merchant/product", async (req, res) => {
+  try {
+    const { productId } = req.body;
+    await db.collection("products").doc(productId).delete();
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// WhatsApp webhook for storefront (Dexatel)
+app.post("/webhook/whatsapp", async (req, res) => {
+  try {
+    const customerPhone = req.body.from?.replace(/\D/g, '') || '';
+    const merchantPhone = req.body.to?.replace(/\D/g, '') || '';
+    const message = req.body.text?.toLowerCase().trim() || '';
+    
+    // Find merchant by phone
+    const merchants = await db.collection("users").where("phoneNumber", "==", merchantPhone).get();
+    if (merchants.empty) {
+      await sendWhatsAppMessage(customerPhone, "This number is not registered as a WhaPay merchant.");
+      return res.sendStatus(200);
+    }
+    const merchant = merchants.docs[0];
+    const merchantCode = merchant.data().dkCode;
+    
+    // Get merchant's products
+    const products = await db.collection("products").where("merchantCode", "==", merchantCode).get();
+    
+    // Handle "STORE" command
+    if (message === 'store') {
+      if (products.empty) {
+        await sendWhatsAppMessage(customerPhone, "This merchant has no products yet. Check back later!");
+        return res.sendStatus(200);
+      }
+      
+      let storeMessage = "🛍️ *STORE*\n\n";
+      let idx = 1;
+      for (const doc of products.docs) {
+        const p = doc.data();
+        storeMessage += `${idx}. *${p.name}* – KES ${p.price}\n   ${p.description || ''}\n\n`;
+        idx++;
+      }
+      storeMessage += "Reply with the number to order.";
+      await sendWhatsAppMessage(customerPhone, storeMessage);
+      return res.sendStatus(200);
+    }
+    
+    // Handle product selection (number)
+    const productNumber = parseInt(message);
+    if (!isNaN(productNumber) && productNumber >= 1 && productNumber <= products.size) {
+      const product = products.docs[productNumber - 1].data();
+      await db.collection("cart_sessions").doc(customerPhone).set({
+        merchantCode,
+        productId: products.docs[productNumber - 1].id,
+        productName: product.name,
+        productPrice: product.price,
+        step: 'awaiting_quantity',
+        createdAt: new Date().toISOString()
+      });
+      await sendWhatsAppMessage(customerPhone, `🛒 *${product.name}* – KES ${product.price}\n\nReply with the quantity (e.g., "2") to proceed.`);
+      return res.sendStatus(200);
+    }
+    
+    // Handle quantity
+    const quantity = parseInt(message);
+    const session = await db.collection("cart_sessions").doc(customerPhone).get();
+    if (session.exists && session.data().step === 'awaiting_quantity' && !isNaN(quantity)) {
+      const productPrice = session.data().productPrice;
+      const total = productPrice * quantity;
+      const paymentLink = `https://whapay.space/pay.html?merchant=${session.data().merchantCode}&amount=${total}&product=${encodeURIComponent(session.data().productName)}&quantity=${quantity}`;
+      await sendWhatsAppMessage(customerPhone, `✅ Total: KES ${total}\nClick here to complete payment: ${paymentLink}`);
+      await db.collection("cart_sessions").doc(customerPhone).delete();
+      return res.sendStatus(200);
+    }
+    
+    // Default response
+    await sendWhatsAppMessage(customerPhone, "💬 Send 'STORE' to see available products.");
+    res.sendStatus(200);
+  } catch (error) {
+    console.error("WhatsApp webhook error:", error);
+    res.sendStatus(500);
+  }
+});
+
+// Enable/disable storefront for merchant
+app.post("/api/merchant/storefront", async (req, res) => {
+  try {
+    const { merchantCode, enabled } = req.body;
+    const merchants = await db.collection("users").where("dkCode", "==", merchantCode).get();
+    if (merchants.empty) return res.status(404).json({ error: "Merchant not found" });
+    await merchants.docs[0].ref.update({ storefrontEnabled: enabled });
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
 // Helper: send WhatsApp message (opens link)
 async function sendWhatsAppMessage(phoneNumber, message) {
   const normalizedPhone = phoneNumber.replace(/^0+/, "254");
