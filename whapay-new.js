@@ -945,27 +945,6 @@ app.post("/api/offline/sync", async (req, res) => {
   }
 });
 
-// ========== SUBSCRIPTION ENDPOINTS ==========
-const SUBSCRIPTION_PLANS = {
-  free: { name: "Free", price: 0 },
-  basic: { name: "Basic", price: 499 },
-  pro: { name: "Pro", price: 999 }
-};
-
-app.post("/api/subscription/create", async (req, res) => {
-  try {
-    const { merchantCode, plan } = req.body;
-    if (!SUBSCRIPTION_PLANS[plan]) return res.status(400).json({ error: "Invalid plan" });
-    
-    const merchants = await db.collection("users").where("dkCode", "==", merchantCode).get();
-    if (merchants.empty) return res.status(404).json({ error: "Merchant not found" });
-    
-    await merchants.docs[0].ref.update({ subscriptionPlan: plan });
-    res.json({ success: true, plan });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
 
 app.get("/api/subscription/:merchantCode", async (req, res) => {
   try {
