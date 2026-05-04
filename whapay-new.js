@@ -489,6 +489,247 @@ h1 { color: #25D366; }
 </html>`);
 });
 
+// ========== CUSTOMER CARD FEE (Added May 2026) ==========
+function calculateCustomerCardFee(amount) {
+  if (amount <= 500) return 10;
+  if (amount <= 2000) return 20;
+  if (amount <= 5000) return 40;
+  return Math.min(Math.round(amount * 0.01), 200);
+}
+
+// ========== SUBSCRIPTION PLANS ==========
+const SUBSCRIPTION_PLANS = {
+  free: { name: "Free", price: 0, cardFee: 0.025, cardFeeFixed: 20 },
+  basic: { name: "Basic", price: 499, cardFee: 0.015, cardFeeFixed: 20 },
+  pro: { name: "Pro", price: 999, cardFee: 0.01, cardFeeFixed: 20 }
+};
+
+// Create subscription
+app.post("/api/subscription/create", async (req, res) => {
+  try {
+    const { merchantCode, plan } = req.body;
+    if (!SUBSCRIPTION_PLANS[plan]) return res.status(400).json({ error: "Invalid plan" });
+    
+    const merchants = await db.collection("users").where("dkCode", "==", merchantCode).get();
+    if (merchants.empty) return res.status(404).json({ error: "Merchant not found" });
+    
+    await merchants.docs[0].ref.update({ subscriptionPlan: plan });
+    
+    const existingSub = await db.collection("subscriptions").where("merchantId", "==", merchants.docs[0].id).get();
+    const subscription = {
+      merchantCode,
+      merchantId: merchants.docs[0].id,
+      plan,
+      status: "active",
+      startDate: new Date().toISOString(),
+      nextBillingDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString()
+    };
+    
+    if (!existingSub.empty) {
+      await existingSub.docs[0].ref.update(subscription);
+    } else {
+      await db.collection("subscriptions").add(subscription);
+    }
+    
+    const msg = `✅ WhaPay Subscription: ${SUBSCRIPTION_PLANS[plan].name} plan (KES ${SUBSCRIPTION_PLANS[plan].price}/month). Next billing: ${subscription.nextBillingDate}`;
+    await sendWhatsAppMessage(merchants.docs[0].data().phoneNumber, msg);
+    
+    res.json({ success: true, plan });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get merchant subscription
+app.get("/api/subscription/:merchantCode", async (req, res) => {
+  try {
+    const { merchantCode } = req.params;
+    const merchants = await db.collection("users").where("dkCode", "==", merchantCode).get();
+    if (merchants.empty) return res.status(404).json({ error: "Merchant not found" });
+    
+    const plan = merchants.docs[0].data().subscriptionPlan || "free";
+    res.json({ success: true, plan, details: SUBSCRIPTION_PLANS[plan] });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ========== RETAIL SELF-PAYMENT (Customer dials their Member Code) ==========
+// USSD Handler - Customer dials *014*DK005#
+app.post("/api/ussd-member", async (req, res) => {
+  try {
+    let { sessionId, phoneNumber, text } = req.body;
+    let input = text ? text.split("*") : [];
+    let level = input.length;
+    let memberCode = input[0] ? input[0].toUpperCase() : "";
+    let response = "";
+    
+    if (!memberCode) {
+      response = "CON Enter your WhaPay Member Code (e.g., DK005):";
+    }
+    else if (level === 1) {
+      let users = await db.collection("users").where("dkCode", "==", memberCode).get();
+      if (users.empty) {
+        response = `END Member Code ${memberCode} not found.\n\nRegister: WhatsApp REGISTER to 0140933042`;
+      } else {
+        await db.collection("ussd_sessions").doc(sessionId).set({
+          phoneNumber, memberCode, step: "merchant_input", createdAt: new Date().toISOString()
+        });
+        response = "CON Enter merchant (Till/Paybill/Name):\nExample: Carrefour or 123456";
+      }
+    }
+    else if (level === 2) {
+      let merchantId = input[1];
+      await db.collection("ussd_sessions").doc(sessionId).update({ merchantId, step: "amount" });
+      response = "CON Enter amount in KES:";
+    }
+    else if (level === 3) {
+      let amount = parseFloat(input[2]);
+      let fee = amount <= 1000 ? 10 : (amount <= 5000 ? 20 : (amount <= 20000 ? 50 : 100));
+      let total = amount + fee;
+      await db.collection("ussd_sessions").doc(sessionId).update({ amount, fee, total, step: "payment_method" });
+      response = `CON Amount: KES ${amount}\nFee: KES ${fee}\nTotal: KES ${total}\n\n1. Card\n2. M-Pesa`;
+    }
+    else if (level === 4) {
+      let choice = input[3];
+      let session = await db.collection("ussd_sessions").doc(sessionId).get();
+      let data = session.data();
+      
+      if (choice === "1") {
+        let paymentLink = `https://whapay.space/pay?amount=${data.amount}&merchant=${encodeURIComponent(data.merchantId)}&fee=${data.fee}&code=${data.memberCode}`;
+        await sendWhatsAppMessage(data.phoneNumber, `💳 Pay KES ${data.total}: ${paymentLink}`);
+        response = `END Payment link sent via WhatsApp.\nMerchant: ${data.merchantId}\nAmount: KES ${data.amount}\nFee: KES ${data.fee}\nTotal: KES ${data.total}`;
+      } else if (choice === "2") {
+        await session.ref.update({ step: "mpesa_phone" });
+        response = "CON Enter M-Pesa phone number:";
+      } else {
+        response = "END Invalid. Send 1 for Card or 2 for M-Pesa.";
+      }
+    }
+    else if (level === 5) {
+      let mpesaPhone = input[4];
+      let session = await db.collection("ussd_sessions").doc(sessionId).get();
+      let data = session.data();
+      let cleanPhone = mpesaPhone.replace(/\D/g, '');
+      if (cleanPhone.startsWith("0")) cleanPhone = "254" + cleanPhone.substring(1);
+      
+      response = `END STK push sent to ${cleanPhone}.\nAmount: KES ${data.total}\nCheck your phone and enter PIN.`;
+      await session.ref.delete();
+    }
+    
+    res.set("Content-Type", "text/plain");
+    res.send(response);
+  } catch (error) {
+    console.error("USSD error:", error);
+    res.send("END System error. Try again.");
+  }
+});
+
+// WhatsApp member code handler
+app.post("/webhook/whatsapp-member", async (req, res) => {
+  try {
+    const customerPhone = req.body.from?.replace(/\D/g, '') || '';
+    const message = req.body.text?.trim() || '';
+    
+    // Check if message is Member Code (DKxxxx)
+    if (message.match(/^DK\d{4,6}$/i)) {
+      let memberCode = message.toUpperCase();
+      let users = await db.collection("users").where("dkCode", "==", memberCode).get();
+      if (users.empty) {
+        await sendWhatsAppMessage(customerPhone, `❌ Code ${memberCode} not found. Send REGISTER to join.`);
+      } else {
+        await db.collection("whatsapp_sessions").doc(customerPhone).set({
+          memberCode, step: "awaiting_payment", createdAt: new Date().toISOString()
+        });
+        await sendWhatsAppMessage(customerPhone, `✅ Welcome!\n\nTo pay any merchant, send:\nPAY [Merchant] [Amount]\n\nExamples:\nPAY Carrefour 5000\nPAY 123456 5000`);
+      }
+      return res.sendStatus(200);
+    }
+    
+    // Handle PAY command
+    if (message.toLowerCase().startsWith("pay ")) {
+      let parts = message.split(" ");
+      let merchantId = parts[1];
+      let amount = parseFloat(parts[2]);
+      let session = await db.collection("whatsapp_sessions").doc(customerPhone).get();
+      
+      if (!session.exists) {
+        await sendWhatsAppMessage(customerPhone, "First send your Member Code (e.g., DK005) to login.");
+        return res.sendStatus(200);
+      }
+      
+      let fee = amount <= 1000 ? 10 : (amount <= 5000 ? 20 : (amount <= 20000 ? 50 : 100));
+      let total = amount + fee;
+      
+      await sendWhatsAppMessage(customerPhone, `💰 Confirm:\nMerchant: ${merchantId}\nAmount: KES ${amount}\nFee: KES ${fee}\nTotal: KES ${total}\n\nReply 1=Card 2=M-Pesa`);
+      await session.ref.update({ merchantId, amount, fee, total, step: "awaiting_method" });
+    }
+    
+    // Handle payment method
+    if (message === "1") {
+      let session = await db.collection("whatsapp_sessions").doc(customerPhone).get();
+      if (session.exists && session.data().step === "awaiting_method") {
+        let data = session.data();
+        let paymentLink = `https://whapay.space/pay?amount=${data.amount}&merchant=${encodeURIComponent(data.merchantId)}&fee=${data.fee}`;
+        await sendWhatsAppMessage(customerPhone, `💳 Pay: ${paymentLink}`);
+        await session.ref.delete();
+      }
+    }
+    if (message === "2") {
+      let session = await db.collection("whatsapp_sessions").doc(customerPhone).get();
+      if (session.exists && session.data().step === "awaiting_method") {
+        await session.ref.update({ step: "awaiting_mpesa_phone" });
+        await sendWhatsAppMessage(customerPhone, "📱 Enter M-Pesa phone number (e.g., 0712345678):");
+      }
+    }
+    
+    // Handle M-Pesa phone
+    if (message.match(/^0?\d{9}$/) && customerPhone) {
+      let session = await db.collection("whatsapp_sessions").doc(customerPhone).get();
+      if (session.exists && session.data().step === "awaiting_mpesa_phone") {
+        let data = session.data();
+        let mpesaPhone = message.replace(/\D/g, '');
+        if (mpesaPhone.startsWith("0")) mpesaPhone = "254" + mpesaPhone.substring(1);
+        await sendWhatsAppMessage(customerPhone, `📱 STK push sent to ${mpesaPhone}\nAmount: KES ${data.total}`);
+        await session.ref.delete();
+      }
+    }
+    
+    res.sendStatus(200);
+  } catch (error) {
+    console.error("WhatsApp error:", error);
+    res.sendStatus(500);
+  }
+});
+
+// Retail store payment (merchant initiates)
+app.post("/api/retail-pay", async (req, res) => {
+  try {
+    const { customerCode, merchantTill, amount, merchantName } = req.body;
+    const customers = await db.collection("users").where("dkCode", "==", customerCode).get();
+    if (customers.empty) {
+      return res.status(404).json({ error: "Customer not found. Register via WhatsApp 0140933042" });
+    }
+    
+    const customer = customers.docs[0].data();
+    let fee = amount <= 1000 ? 10 : (amount <= 5000 ? 20 : (amount <= 20000 ? 50 : 100));
+    let total = amount + fee;
+    
+    const transactionId = `RTL_${Date.now()}`;
+    await db.collection("transactions").add({
+      transactionId, customerCode, customerPhone: customer.phoneNumber,
+      merchantTill, merchantName: merchantName || "Retail Store",
+      amount, fee, total, status: "pending_payment", createdAt: new Date().toISOString()
+    });
+    
+    await sendWhatsAppMessage(customer.phoneNumber,
+      `🏪 Payment request\nStore: ${merchantName || merchantTill}\nAmount: KES ${amount}\nFee: KES ${fee}\nTotal: KES ${total}\n\nReply 1=Card 2=M-Pesa`);
+    
+    res.json({ success: true, transactionId, message: "Request sent to customer" });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
 app.get("/pay", (req, res) => {
   const prefillCode = req.query.code || "";
   res.send(`<!DOCTYPE html>
