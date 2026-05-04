@@ -801,6 +801,88 @@ async function pay() {
 </html>`);
 });
 
+// ========== STANDALONE OFFLINE SYNC & RECEIPT (No existing code modified) ==========
+
+// Store offline transaction
+app.post("/api/offline/store", async (req, res) => {
+  try {
+    const { customerPhone, customerName, merchantName, merchantPhone, amount, paymentMethod } = req.body;
+    
+    const pendingId = `pending_${customerPhone}_${Date.now()}`;
+    await db.collection("pending_offline").doc(pendingId).set({
+      customerPhone, customerName, merchantName, merchantPhone, amount, paymentMethod,
+      status: "pending",
+      createdAt: new Date().toISOString()
+    });
+    
+    res.json({ success: true, message: "Offline transaction stored" });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Sync all offline transactions for a customer
+app.post("/api/offline/sync", async (req, res) => {
+  try {
+    const { customerPhone } = req.body;
+    
+    const pending = await db.collection("pending_offline")
+      .where("customerPhone", "==", customerPhone)
+      .where("status", "==", "pending")
+      .get();
+    
+    if (pending.empty) {
+      return res.json({ success: true, synced: 0 });
+    }
+    
+    let synced = 0;
+    for (const doc of pending.docs) {
+      const data = doc.data();
+      
+      // Save to main transactions
+      await db.collection("transactions").add({
+        transactionId: `SYNC_${Date.now()}_${synced}`,
+        customerName: data.customerName,
+        customerPhone: data.customerPhone,
+        merchantName: data.merchantName,
+        merchantPhone: data.merchantPhone,
+        amount: data.amount,
+        paymentMethod: data.paymentMethod,
+        status: "completed",
+        syncedFromOffline: true,
+        syncedAt: new Date().toISOString()
+      });
+      
+      // Send receipt
+      await sendWhatsAppMessage(data.customerPhone, 
+        `🧾 *WhaPay Receipt*\n━━━━━━━━━━━━━━━━━━━━━\nAmount: KES ${data.amount}\nMerchant: ${data.merchantName}\nStatus: ✅ PAID\n━━━━━━━━━━━━━━━━━━━━━\nThank you!`);
+      
+      await doc.ref.update({ status: "synced", syncedAt: new Date().toISOString() });
+      synced++;
+    }
+    
+    res.json({ success: true, synced });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Check pending count
+app.get("/api/offline/pending/:phone", async (req, res) => {
+  try {
+    const { phone } = req.params;
+    const pending = await db.collection("pending_offline")
+      .where("customerPhone", "==", phone)
+      .where("status", "==", "pending")
+      .get();
+    
+    res.json({ pending: pending.size });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+
 app.get("/merchant", (req, res) => {
   res.send(`<!DOCTYPE html>
 <html>
