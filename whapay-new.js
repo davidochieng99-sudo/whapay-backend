@@ -882,6 +882,190 @@ app.get("/api/offline/pending/:phone", async (req, res) => {
   }
 });
 
+// ========== OFFLINE SYNC ENDPOINTS ==========
+app.post("/api/offline/store", async (req, res) => {
+  try {
+    const { customerPhone, customerName, merchantName, merchantPhone, amount, paymentMethod } = req.body;
+    const pendingId = `pending_${customerPhone}_${Date.now()}`;
+    await db.collection("pending_offline").doc(pendingId).set({
+      customerPhone, customerName, merchantName, merchantPhone, amount, paymentMethod,
+      status: "pending",
+      createdAt: new Date().toISOString()
+    });
+    res.json({ success: true, message: "Offline transaction stored" });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get("/api/offline/pending/:phone", async (req, res) => {
+  try {
+    const { phone } = req.params;
+    const pending = await db.collection("pending_offline")
+      .where("customerPhone", "==", phone)
+      .where("status", "==", "pending")
+      .get();
+    res.json({ pending: pending.size });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post("/api/offline/sync", async (req, res) => {
+  try {
+    const { customerPhone } = req.body;
+    const pending = await db.collection("pending_offline")
+      .where("customerPhone", "==", customerPhone)
+      .where("status", "==", "pending")
+      .get();
+    
+    if (pending.empty) return res.json({ success: true, synced: 0 });
+    
+    let synced = 0;
+    for (const doc of pending.docs) {
+      const data = doc.data();
+      await db.collection("transactions").add({
+        transactionId: `SYNC_${Date.now()}_${synced}`,
+        customerName: data.customerName,
+        customerPhone: data.customerPhone,
+        merchantName: data.merchantName,
+        merchantPhone: data.merchantPhone,
+        amount: data.amount,
+        paymentMethod: data.paymentMethod,
+        status: "completed",
+        syncedFromOffline: true,
+        syncedAt: new Date().toISOString()
+      });
+      await doc.ref.update({ status: "synced", syncedAt: new Date().toISOString() });
+      synced++;
+    }
+    res.json({ success: true, synced });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ========== SUBSCRIPTION ENDPOINTS ==========
+const SUBSCRIPTION_PLANS = {
+  free: { name: "Free", price: 0 },
+  basic: { name: "Basic", price: 499 },
+  pro: { name: "Pro", price: 999 }
+};
+
+app.post("/api/subscription/create", async (req, res) => {
+  try {
+    const { merchantCode, plan } = req.body;
+    if (!SUBSCRIPTION_PLANS[plan]) return res.status(400).json({ error: "Invalid plan" });
+    
+    const merchants = await db.collection("users").where("dkCode", "==", merchantCode).get();
+    if (merchants.empty) return res.status(404).json({ error: "Merchant not found" });
+    
+    await merchants.docs[0].ref.update({ subscriptionPlan: plan });
+    res.json({ success: true, plan });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get("/api/subscription/:merchantCode", async (req, res) => {
+  try {
+    const { merchantCode } = req.params;
+    const merchants = await db.collection("users").where("dkCode", "==", merchantCode).get();
+    if (merchants.empty) return res.status(404).json({ error: "Merchant not found" });
+    
+    const plan = merchants.docs[0].data().subscriptionPlan || "free";
+    res.json({ success: true, plan, details: SUBSCRIPTION_PLANS[plan] });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ========== RETAIL CHECKOUT ==========
+app.post("/api/retail-pay", async (req, res) => {
+  try {
+    const { customerCode, merchantTill, amount, merchantName } = req.body;
+    const customers = await db.collection("users").where("dkCode", "==", customerCode).get();
+    if (customers.empty) {
+      return res.status(404).json({ error: "Customer not found. Register via WhatsApp 0140933042" });
+    }
+    
+    const customer = customers.docs[0].data();
+    let fee = amount <= 1000 ? 10 : (amount <= 5000 ? 20 : (amount <= 20000 ? 50 : 100));
+    let total = amount + fee;
+    
+    await db.collection("transactions").add({
+      transactionId: `RTL_${Date.now()}`,
+      customerCode,
+      customerPhone: customer.phoneNumber,
+      merchantTill,
+      merchantName: merchantName || "Retail Store",
+      amount,
+      fee,
+      total,
+      status: "pending_payment",
+      createdAt: new Date().toISOString()
+    });
+    
+    await sendWhatsAppMessage(customer.phoneNumber,
+      `🏪 Payment request\nStore: ${merchantName || merchantTill}\nAmount: KES ${amount}\nFee: KES ${fee}\nTotal: KES ${total}\n\nReply 1=Card 2=M-Pesa`);
+    
+    res.json({ success: true, message: "Request sent to customer" });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ========== WHATSAPP STOREFRONT ==========
+app.post("/api/merchant/storefront", async (req, res) => {
+  try {
+    const { merchantCode, enabled } = req.body;
+    const merchants = await db.collection("users").where("dkCode", "==", merchantCode).get();
+    if (merchants.empty) return res.status(404).json({ error: "Merchant not found" });
+    await merchants.docs[0].ref.update({ storefrontEnabled: enabled });
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post("/api/merchant/product", async (req, res) => {
+  try {
+    const { merchantCode, name, price, description } = req.body;
+    const merchants = await db.collection("users").where("dkCode", "==", merchantCode).get();
+    if (merchants.empty) return res.status(404).json({ error: "Merchant not found" });
+    
+    await db.collection("products").add({
+      merchantCode,
+      name,
+      price: parseFloat(price),
+      description: description || "",
+      createdAt: new Date().toISOString()
+    });
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get("/api/merchant/products", async (req, res) => {
+  try {
+    const { merchantCode } = req.query;
+    const products = await db.collection("products").where("merchantCode", "==", merchantCode).get();
+    res.json(products.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.delete("/api/merchant/product", async (req, res) => {
+  try {
+    const { productId } = req.body;
+    await db.collection("products").doc(productId).delete();
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
 
 app.get("/merchant", (req, res) => {
   res.send(`<!DOCTYPE html>
