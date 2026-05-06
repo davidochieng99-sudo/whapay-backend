@@ -634,6 +634,125 @@ app.post("/api/ussd-member", async (req, res) => {
   }
 });
 
+
+// ========== SAVED CARDS & OFFLINE CARD PAYMENTS ==========
+
+// Save card for a customer (tokenize via Flutterwave)
+app.post("/api/card/save", async (req, res) => {
+  try {
+    const { customerPhone, cardNumber, expiry, cvv } = req.body;
+    
+    // TODO: After Flutterwave approval, replace with actual tokenization
+    // For now, simulate tokenization
+    const cardToken = `tok_${Date.now()}_${Math.random().toString(36).substring(2, 10)}`;
+    const last4 = cardNumber.slice(-4);
+    
+    // Store tokenized card under customer's phone number
+    const customerRef = db.collection("users").where("phoneNumber", "==", customerPhone);
+    const customer = await customerRef.get();
+    
+    if (customer.empty) {
+      return res.status(404).json({ error: "Customer not found. Register first." });
+    }
+    
+    const customerId = customer.docs[0].id;
+    const savedCards = await db.collection("saved_cards").where("customerId", "==", customerId).get();
+    
+    // Check if card already exists
+    let cardExists = false;
+    savedCards.forEach(doc => {
+      if (doc.data().last4 === last4) cardExists = true;
+    });
+    
+    if (!cardExists) {
+      await db.collection("saved_cards").add({
+        customerId,
+        customerPhone,
+        cardToken,
+        last4,
+        expiry,
+        createdAt: new Date().toISOString()
+      });
+    }
+    
+    res.json({ success: true, message: "Card saved successfully", last4 });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get saved cards for a customer
+app.get("/api/card/saved/:phone", async (req, res) => {
+  try {
+    const { phone } = req.params;
+    const customers = await db.collection("users").where("phoneNumber", "==", phone).get();
+    if (customers.empty) {
+      return res.json({ savedCards: [] });
+    }
+    const customerId = customers.docs[0].id;
+    const savedCards = await db.collection("saved_cards").where("customerId", "==", customerId).get();
+    
+    const cards = savedCards.docs.map(doc => ({
+      id: doc.id,
+      last4: doc.data().last4,
+      expiry: doc.data().expiry
+    }));
+    
+    res.json({ success: true, savedCards: cards });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Process offline card payment (store for later sync)
+app.post("/api/offline/card-pay", async (req, res) => {
+  try {
+    const { customerPhone, merchantCode, amount, savedCardId } = req.body;
+    
+    // Store offline payment in pending collection
+    const offlinePayment = {
+      customerPhone,
+      merchantCode,
+      amount,
+      savedCardId,
+      status: "pending",
+      type: "card",
+      createdAt: new Date().toISOString(),
+      synced: false
+    };
+    
+    await db.collection("offline_payments").add(offlinePayment);
+    res.json({ success: true, message: "Offline card payment saved. Will process when online." });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Sync offline card payments (call when customer comes online)
+app.post("/api/offline/card-sync", async (req, res) => {
+  try {
+    const { customerPhone } = req.body;
+    const pending = await db.collection("offline_payments")
+      .where("customerPhone", "==", customerPhone)
+      .where("synced", "==", false)
+      .get();
+    
+    let synced = 0;
+    for (const doc of pending.docs) {
+      const payment = doc.data();
+      // TODO: After Flutterwave approval, process actual charge using saved card token
+      console.log(`Processing offline card payment: ${payment.amount} to ${payment.merchantCode}`);
+      
+      await doc.ref.update({ synced: true, syncedAt: new Date().toISOString() });
+      synced++;
+    }
+    
+    res.json({ success: true, synced });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // WhatsApp member code handler
 app.post("/webhook/whatsapp-member", async (req, res) => {
   try {
