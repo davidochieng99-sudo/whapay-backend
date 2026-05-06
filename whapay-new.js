@@ -36,6 +36,15 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 app.use(express.static("public"));
+
+// Force HTTPS redirect (fixes Google indexing)
+app.use((req, res, next) => {
+  // Only redirect in production (not on localhost)
+  if (req.headers['x-forwarded-proto'] && req.headers['x-forwarded-proto'] !== 'https') {
+    return res.redirect(301, `https://${req.headers.host}${req.url}`);
+  }
+  next();
+});
 // Test route – remove later
 app.get("/ping", (req, res) => {
   res.send("pong");
