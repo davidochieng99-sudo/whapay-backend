@@ -858,6 +858,330 @@ app.post("/api/retail-pay", async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
+
+// ========== UNIVERSAL MOBILE MONEY (All Networks) ==========
+
+// Helper: Calculate customer fee for non-M-Pesa transactions
+function calculateMobileMoneyFee(amount) {
+  if (amount <= 500) return 10;
+  if (amount <= 2000) return 20;
+  if (amount <= 5000) return 30;
+  if (amount <= 10000) return 50;
+  return 100;
+}
+
+// Helper: Detect country and network from phone number
+function detectCountryFromPhone(phoneNumber) {
+  const cleanPhone = phoneNumber.replace(/\D/g, '');
+  if (cleanPhone.startsWith('254')) return { country: 'KE', currency: 'KES', defaultNetwork: 'MPS' };
+  if (cleanPhone.startsWith('256')) return { country: 'UG', currency: 'UGX', defaultNetwork: 'AIRTEL' };
+  if (cleanPhone.startsWith('255')) return { country: 'TZ', currency: 'TZS', defaultNetwork: 'AIRTEL' };
+  if (cleanPhone.startsWith('233')) return { country: 'GH', currency: 'GHS', defaultNetwork: 'MTN' };
+  if (cleanPhone.startsWith('250')) return { country: 'RW', currency: 'RWF', defaultNetwork: 'MTN' };
+  if (cleanPhone.startsWith('237')) return { country: 'CM', currency: 'XAF', defaultNetwork: 'MTN' };
+  if (cleanPhone.startsWith('225')) return { country: 'CI', currency: 'XOF', defaultNetwork: 'ORANGE' };
+  if (cleanPhone.startsWith('221')) return { country: 'SN', currency: 'XOF', defaultNetwork: 'ORANGE' };
+  return { country: 'KE', currency: 'KES', defaultNetwork: 'MPS' };
+}
+
+// Network mapping for Flutterwave
+const FLW_NETWORK_MAP = {
+  'MPS': 'MPS',
+  'AIRTEL': 'AIRTEL',
+  'MTN': 'MTN',
+  'TIGO': 'TIGO',
+  'HALOPESA': 'HALOPESA',
+  'ORANGE': 'ORANGE',
+  'VODAFONE': 'VODAFONE'
+};
+
+// Initialize Flutterwave
+let flw = null;
+function initFlutterwave() {
+  if (!flw && process.env.FLW_SECRET_KEY) {
+    const Flutterwave = require('flutterwave-node-v3');
+    flw = new Flutterwave(process.env.FLW_PUBLIC_KEY, process.env.FLW_SECRET_KEY);
+    console.log("✅ Flutterwave initialized");
+  }
+  return flw;
+}
+
+// ========== 1. M-PESA (No Customer Fee) ==========
+app.post("/api/mpesa/charge", async (req, res) => {
+  try {
+    const { merchantCode, customerPhone, customerName, amount } = req.body;
+    
+    if (!merchantCode || !customerPhone || !amount) {
+      return res.status(400).json({ error: "Missing required fields" });
+    }
+    
+    // Clean phone number
+    let cleanPhone = customerPhone.replace(/\D/g, '');
+    if (cleanPhone.startsWith('0')) cleanPhone = '254' + cleanPhone.substring(1);
+    if (!cleanPhone.startsWith('254')) cleanPhone = '254' + cleanPhone;
+    
+    // Get merchant
+    const merchants = await db.collection("users").where("dkCode", "==", merchantCode).get();
+    if (merchants.empty) {
+      return res.status(404).json({ error: "Merchant not found" });
+    }
+    const merchant = merchants.docs[0].data();
+    
+    // Initialize Flutterwave
+    const flutterwave = initFlutterwave();
+    if (!flutterwave) {
+      return res.status(500).json({ error: "Flutterwave not configured" });
+    }
+    
+    const tx_ref = `MPESA_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+    
+    const payload = {
+      tx_ref: tx_ref,
+      amount: parseFloat(amount),
+      currency: "KES",
+      phone_number: cleanPhone,
+      email: customerName ? `${customerName.replace(/\s/g, '')}@whapay.user` : "customer@whapay.space",
+      fullname: customerName || "WhaPay Customer",
+      network: "MPS",
+      country: "KE"
+    };
+    
+    console.log(`💰 Initiating M-Pesa charge: KES ${amount} to ${cleanPhone}`);
+    
+    const response = await flutterwave.MobileMoney.charge(payload);
+    
+    if (response.status === 'success') {
+      const transactionId = `MPESA_${Date.now()}`;
+      await db.collection("transactions").add({
+        transactionId,
+        type: "mpesa",
+        merchantCode,
+        merchantName: merchant.fullname,
+        amount: parseFloat(amount),
+        customerPhone: cleanPhone,
+        customerName: customerName || "Guest",
+        status: "pending",
+        customerFee: 0,
+        totalPaid: parseFloat(amount),
+        merchantReceives: parseFloat(amount),
+        flutterwaveRef: response.data?.flw_ref,
+        tx_ref: tx_ref,
+        createdAt: new Date().toISOString()
+      });
+      
+      res.json({
+        success: true,
+        message: "STK Push sent. Check your phone for M-Pesa prompt.",
+        transactionId
+      });
+    } else {
+      throw new Error(response.message || "Payment failed");
+    }
+    
+  } catch (error) {
+    console.error("M-Pesa error:", error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ========== 2. OTHER MOBILE MONEY (Airtel, MTN, Orange, Tigo, etc.) WITH CUSTOMER FEE ==========
+app.post("/api/mobile-money/charge", async (req, res) => {
+  try {
+    const { merchantCode, customerPhone, customerName, amount, network } = req.body;
+    
+    if (!merchantCode || !customerPhone || !amount) {
+      return res.status(400).json({ error: "Missing required fields" });
+    }
+    
+    // Detect country from phone number
+    const { country, currency, defaultNetwork } = detectCountryFromPhone(customerPhone);
+    const selectedNetwork = network || defaultNetwork;
+    const flutterwaveNetwork = FLW_NETWORK_MAP[selectedNetwork] || selectedNetwork;
+    
+    // Clean phone number
+    let cleanPhone = customerPhone.replace(/\D/g, '');
+    if (cleanPhone.startsWith('0')) {
+      if (country === 'KE') cleanPhone = '254' + cleanPhone.substring(1);
+      else if (country === 'UG') cleanPhone = '256' + cleanPhone.substring(1);
+      else if (country === 'TZ') cleanPhone = '255' + cleanPhone.substring(1);
+      else if (country === 'GH') cleanPhone = '233' + cleanPhone.substring(1);
+      else if (country === 'RW') cleanPhone = '250' + cleanPhone.substring(1);
+      else if (country === 'CM') cleanPhone = '237' + cleanPhone.substring(1);
+    }
+    
+    // Calculate customer fee
+    const customerFee = calculateMobileMoneyFee(parseFloat(amount));
+    const totalAmount = parseFloat(amount) + customerFee;
+    
+    // Get merchant
+    const merchants = await db.collection("users").where("dkCode", "==", merchantCode).get();
+    if (merchants.empty) {
+      return res.status(404).json({ error: "Merchant not found" });
+    }
+    const merchant = merchants.docs[0].data();
+    
+    // Initialize Flutterwave
+    const flutterwave = initFlutterwave();
+    if (!flutterwave) {
+      return res.status(500).json({ error: "Flutterwave not configured" });
+    }
+    
+    const tx_ref = `MM_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+    
+    const payload = {
+      tx_ref: tx_ref,
+      amount: totalAmount,
+      currency: currency,
+      phone_number: cleanPhone,
+      email: customerName ? `${customerName.replace(/\s/g, '')}@whapay.user` : "customer@whapay.space",
+      fullname: customerName || "WhaPay Customer",
+      network: flutterwaveNetwork,
+      country: country,
+      meta: {
+        merchant_code: merchantCode,
+        merchant_name: merchant.fullname,
+        original_amount: amount,
+        customer_fee: customerFee
+      }
+    };
+    
+    console.log(`💰 Initiating ${selectedNetwork} payment: ${totalAmount} ${currency} (fee: ${customerFee}) to ${cleanPhone}`);
+    
+    const response = await flutterwave.MobileMoney.charge(payload);
+    
+    if (response.status === 'success') {
+      const transactionId = `MM_${Date.now()}`;
+      await db.collection("transactions").add({
+        transactionId,
+        type: "mobile_money",
+        network: selectedNetwork,
+        country: country,
+        currency: currency,
+        merchantCode,
+        merchantName: merchant.fullname,
+        originalAmount: parseFloat(amount),
+        customerFee: customerFee,
+        totalPaid: totalAmount,
+        merchantReceives: parseFloat(amount),
+        customerPhone: cleanPhone,
+        customerName: customerName || "Guest",
+        status: "pending",
+        flutterwaveRef: response.data?.flw_ref,
+        tx_ref: tx_ref,
+        createdAt: new Date().toISOString()
+      });
+      
+      res.json({
+        success: true,
+        message: `Payment request sent to ${cleanPhone}. Check your phone for ${selectedNetwork} prompt.`,
+        transactionId,
+        amount: amount,
+        fee: customerFee,
+        total: totalAmount,
+        currency: currency
+      });
+    } else {
+      throw new Error(response.message || "Payment failed");
+    }
+    
+  } catch (error) {
+    console.error("Mobile money error:", error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ========== 3. UNIVERSAL WEBHOOK (For all mobile money networks) ==========
+app.post("/api/mobile-money/webhook", async (req, res) => {
+  try {
+    const event = req.body;
+    console.log("📥 Mobile money webhook received:", event);
+    
+    // Check for successful payment
+    const isSuccessful = event.status === 'successful' || event.data?.status === 'successful';
+    
+    if (isSuccessful) {
+      const tx_ref = event.data?.tx_ref || event.tx_ref;
+      const flutterwaveRef = event.data?.flw_ref || event.flw_ref;
+      
+      // Find and update transaction
+      const transactions = await db.collection("transactions")
+        .where("tx_ref", "==", tx_ref)
+        .get();
+      
+      if (!transactions.empty) {
+        const transaction = transactions.docs[0];
+        const data = transaction.data();
+        
+        await transaction.ref.update({
+          status: "completed",
+          flutterwaveRef: flutterwaveRef,
+          completedAt: new Date().toISOString()
+        });
+        
+        // Send receipt to customer
+        let receiptMessage = `✅ Payment successful!\n\n`;
+        receiptMessage += `Amount: ${data.currency || 'KES'} ${data.originalAmount || data.amount}\n`;
+        if (data.customerFee > 0) {
+          receiptMessage += `WhaPay fee: ${data.currency || 'KES'} ${data.customerFee}\n`;
+          receiptMessage += `Total paid: ${data.currency || 'KES'} ${data.totalPaid}\n`;
+        }
+        receiptMessage += `\nMerchant: ${data.merchantName}\n`;
+        receiptMessage += `Thank you for using WhaPay!`;
+        
+        await sendWhatsAppMessage(data.customerPhone, receiptMessage);
+        
+        // Send merchant notification
+        await sendWhatsAppMessage(data.merchantPhone, 
+          `💰 Payment received!\n\nCustomer: ${data.customerName}\nAmount: ${data.currency || 'KES'} ${data.merchantReceives || data.amount}\n\nView in dashboard: https://whapay.space/reports.html`);
+      }
+    }
+    
+    res.status(200).json({ status: "success" });
+    
+  } catch (error) {
+    console.error("Webhook error:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ========== 4. CHECK TRANSACTION STATUS ==========
+app.get("/api/transaction/status/:transactionId", async (req, res) => {
+  try {
+    const { transactionId } = req.params;
+    const transaction = await db.collection("transactions").doc(transactionId).get();
+    
+    if (!transaction.exists) {
+      return res.status(404).json({ error: "Transaction not found" });
+    }
+    
+    res.json({
+      success: true,
+      status: transaction.data().status,
+      amount: transaction.data().amount,
+      merchantCode: transaction.data().merchantCode
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ========== 5. GET SUPPORTED NETWORKS BY COUNTRY ==========
+app.get("/api/mobile-money/networks", async (req, res) => {
+  const networksByCountry = {
+    'KE': { country: 'Kenya', currency: 'KES', networks: ['M-Pesa'] },
+    'UG': { country: 'Uganda', currency: 'UGX', networks: ['Airtel', 'MTN'] },
+    'TZ': { country: 'Tanzania', currency: 'TZS', networks: ['Airtel', 'Tigo', 'Halopesa'] },
+    'GH': { country: 'Ghana', currency: 'GHS', networks: ['MTN', 'Vodafone', 'AirtelTigo'] },
+    'RW': { country: 'Rwanda', currency: 'RWF', networks: ['Airtel', 'MTN'] },
+    'CM': { country: 'Cameroon', currency: 'XAF', networks: ['MTN', 'Orange'] },
+    'CI': { country: 'Côte d\'Ivoire', currency: 'XOF', networks: ['MTN', 'Orange', 'Moov', 'Wave'] },
+    'SN': { country: 'Senegal', currency: 'XOF', networks: ['Orange', 'Free Money', 'Wave'] }
+  };
+  
+  res.json({ success: true, networks: networksByCountry });
+});
+
+
 app.get("/pay", (req, res) => {
   const prefillCode = req.query.code || "";
   res.send(`<!DOCTYPE html>
