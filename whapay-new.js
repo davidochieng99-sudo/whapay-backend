@@ -1144,6 +1144,225 @@ app.post("/api/mobile-money/webhook", async (req, res) => {
   }
 });
 
+
+// ========== ALIAS ENDPOINTS FOR SPECIFIC MOBILE MONEY NETWORKS ==========
+// These allow frontend to call /api/airtel/charge, /api/mtn/charge, etc.
+// They simply redirect to the universal /api/mobile-money/charge endpoint
+
+app.post("/api/airtel/charge", async (req, res) => {
+  req.body.network = "AIRTEL";
+  return require('express')().
+    post('/api/mobile-money/charge', async (req2, res2) => {
+      try {
+        const { merchantCode, customerPhone, customerName, amount, email } = req.body;
+        const flutterwave = initFlutterwave();
+        if (!flutterwave) {
+          return res2.status(500).json({ error: "Flutterwave not configured. Add FLW_SECRET_KEY to environment variables." });
+        }
+        
+        const { country, currency } = detectCountryFromPhone(customerPhone);
+        let cleanPhone = customerPhone.replace(/\D/g, '');
+        if (cleanPhone.startsWith('0')) {
+          if (country === 'KE') cleanPhone = '254' + cleanPhone.substring(1);
+          else if (country === 'UG') cleanPhone = '256' + cleanPhone.substring(1);
+          else if (country === 'TZ') cleanPhone = '255' + cleanPhone.substring(1);
+        }
+        
+        const customerFee = calculateMobileMoneyFee(parseFloat(amount));
+        const totalAmount = parseFloat(amount) + customerFee;
+        const tx_ref = `AIRTEL_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+        
+        const payload = {
+          tx_ref: tx_ref,
+          amount: totalAmount,
+          currency: currency,
+          phone_number: cleanPhone,
+          email: email || `${cleanPhone}@whapay.user`,
+          fullname: customerName || "WhaPay Customer",
+          network: "AIRTEL",
+          country: country,
+          meta: { original_amount: amount, customer_fee: customerFee }
+        };
+        
+        const response = await flutterwave.MobileMoney.charge(payload);
+        
+        if (response.status === 'success') {
+          await db.collection("transactions").add({
+            transactionId: tx_ref,
+            type: "airtel",
+            merchantCode,
+            amount: parseFloat(amount),
+            customerFee: customerFee,
+            totalPaid: totalAmount,
+            customerPhone: cleanPhone,
+            status: "pending",
+            createdAt: new Date().toISOString()
+          });
+          res2.json({ success: true, message: "Airtel Money payment initiated!", transactionId: tx_ref, amount: amount, fee: customerFee, total: totalAmount });
+        } else {
+          throw new Error(response.message || "Airtel payment failed");
+        }
+      } catch (error) {
+        console.error("Airtel error:", error);
+        res2.status(500).json({ success: false, error: error.message });
+      }
+    })(req, res);
+});
+
+app.post("/api/mtn/charge", async (req, res) => {
+  req.body.network = "MTN";
+  try {
+    const { merchantCode, customerPhone, customerName, amount, email } = req.body;
+    const flutterwave = initFlutterwave();
+    if (!flutterwave) {
+      return res.status(500).json({ error: "Flutterwave not configured" });
+    }
+    
+    let cleanPhone = customerPhone.replace(/\D/g, '');
+    if (cleanPhone.startsWith('0')) cleanPhone = '256' + cleanPhone.substring(1);
+    if (!cleanPhone.startsWith('256')) cleanPhone = '256' + cleanPhone;
+    
+    const customerFee = calculateMobileMoneyFee(parseFloat(amount));
+    const totalAmount = parseFloat(amount) + customerFee;
+    const tx_ref = `MTN_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+    
+    const payload = {
+      tx_ref: tx_ref,
+      amount: totalAmount,
+      currency: "UGX",
+      phone_number: cleanPhone,
+      email: email || `${cleanPhone}@whapay.user`,
+      fullname: customerName || "WhaPay Customer",
+      network: "MTN",
+      country: "UG",
+      meta: { original_amount: amount, customer_fee: customerFee }
+    };
+    
+    const response = await flutterwave.MobileMoney.charge(payload);
+    
+    if (response.status === 'success') {
+      await db.collection("transactions").add({
+        transactionId: tx_ref,
+        type: "mtn",
+        merchantCode,
+        amount: parseFloat(amount),
+        customerFee: customerFee,
+        totalPaid: totalAmount,
+        customerPhone: cleanPhone,
+        status: "pending",
+        createdAt: new Date().toISOString()
+      });
+      res.json({ success: true, message: "MTN Mobile Money payment initiated!", transactionId: tx_ref });
+    } else {
+      throw new Error(response.message || "MTN payment failed");
+    }
+  } catch (error) {
+    console.error("MTN error:", error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.post("/api/tigo/charge", async (req, res) => {
+  try {
+    const { merchantCode, customerPhone, customerName, amount, email } = req.body;
+    const flutterwave = initFlutterwave();
+    if (!flutterwave) {
+      return res.status(500).json({ error: "Flutterwave not configured" });
+    }
+    
+    let cleanPhone = customerPhone.replace(/\D/g, '');
+    if (cleanPhone.startsWith('0')) cleanPhone = '255' + cleanPhone.substring(1);
+    if (!cleanPhone.startsWith('255')) cleanPhone = '255' + cleanPhone;
+    
+    const customerFee = calculateMobileMoneyFee(parseFloat(amount));
+    const totalAmount = parseFloat(amount) + customerFee;
+    const tx_ref = `TIGO_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+    
+    const payload = {
+      tx_ref: tx_ref,
+      amount: totalAmount,
+      currency: "TZS",
+      phone_number: cleanPhone,
+      email: email || `${cleanPhone}@whapay.user`,
+      fullname: customerName || "WhaPay Customer",
+      network: "TIGO",
+      country: "TZ",
+      meta: { original_amount: amount, customer_fee: customerFee }
+    };
+    
+    const response = await flutterwave.MobileMoney.charge(payload);
+    
+    if (response.status === 'success') {
+      await db.collection("transactions").add({
+        transactionId: tx_ref,
+        type: "tigo",
+        merchantCode,
+        amount: parseFloat(amount),
+        customerFee: customerFee,
+        totalPaid: totalAmount,
+        customerPhone: cleanPhone,
+        status: "pending",
+        createdAt: new Date().toISOString()
+      });
+      res.json({ success: true, message: "Tigo Pesa payment initiated!", transactionId: tx_ref });
+    } else {
+      throw new Error(response.message || "Tigo payment failed");
+    }
+  } catch (error) {
+    console.error("Tigo error:", error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.post("/api/orange/charge", async (req, res) => {
+  try {
+    const { merchantCode, customerPhone, customerName, amount, email, country } = req.body;
+    const flutterwave = initFlutterwave();
+    if (!flutterwave) {
+      return res.status(500).json({ error: "Flutterwave not configured" });
+    }
+    
+    const countryCode = country || 'CI';
+    const currency = (countryCode === 'SN' || countryCode === 'CI') ? 'XOF' : 'XAF';
+    const customerFee = calculateMobileMoneyFee(parseFloat(amount));
+    const totalAmount = parseFloat(amount) + customerFee;
+    const tx_ref = `ORANGE_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+    
+    const payload = {
+      tx_ref: tx_ref,
+      amount: totalAmount,
+      currency: currency,
+      phone_number: customerPhone,
+      email: email || `${customerPhone.replace(/\D/g, '')}@whapay.user`,
+      fullname: customerName || "WhaPay Customer",
+      network: "ORANGE",
+      country: countryCode,
+      meta: { original_amount: amount, customer_fee: customerFee }
+    };
+    
+    const response = await flutterwave.MobileMoney.charge(payload);
+    
+    if (response.status === 'success') {
+      await db.collection("transactions").add({
+        transactionId: tx_ref,
+        type: "orange",
+        merchantCode,
+        amount: parseFloat(amount),
+        customerFee: customerFee,
+        totalPaid: totalAmount,
+        customerPhone: customerPhone,
+        status: "pending",
+        createdAt: new Date().toISOString()
+      });
+      res.json({ success: true, message: "Orange Money payment initiated!", transactionId: tx_ref });
+    } else {
+      throw new Error(response.message || "Orange payment failed");
+    }
+  } catch (error) {
+    console.error("Orange error:", error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
 // ========== 4. CHECK TRANSACTION STATUS ==========
 app.get("/api/transaction/status/:transactionId", async (req, res) => {
   try {
