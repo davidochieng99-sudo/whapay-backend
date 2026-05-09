@@ -1798,14 +1798,70 @@ async function sendLink() {
 app.post("/api/flw-webhook", async (req, res) => {
   console.log("📥 Webhook received from Flutterwave:", req.body);
   
-  // TODO: After Flutterwave approval, we will:
-  // 1. Verify the signature using your secret hash
-  // 2. Update transaction status in Firestore
-  // 3. Send confirmation to customer/merchant
-  
-  // Always respond with 200 to acknowledge receipt
-  res.status(200).json({ status: "success", message: "Webhook received" });
+  try {
+    const event = req.body;
+    
+    // Check for successful payment
+    const isSuccessful = event.status === 'successful' || event.data?.status === 'successful';
+    
+    if (isSuccessful && event.data?.tx_ref) {
+      const tx_ref = event.data.tx_ref;
+      const flutterwaveRef = event.data.flw_ref;
+      const amount = event.data.amount;
+      const currency = event.data.currency;
+      
+      console.log(`✅ Successful payment detected: ${tx_ref}`);
+      
+      // Find and update transaction in Firestore
+      const transactions = await db.collection("transactions")
+        .where("transactionId", "==", tx_ref)
+        .get();
+      
+      if (!transactions.empty) {
+        const transaction = transactions.docs[0];
+        const data = transaction.data();
+        
+        // Update transaction status
+        await transaction.ref.update({
+          status: "completed",
+          flutterwaveRef: flutterwaveRef,
+          completedAt: new Date().toISOString()
+        });
+        
+        console.log(`✅ Transaction ${tx_ref} updated to completed`);
+        
+        // Send receipt to customer via WhatsApp
+        if (data.customerPhone) {
+          let receiptMessage = `✅ Payment successful!\n\n`;
+          receiptMessage += `Amount: ${currency || 'KES'} ${data.originalAmount || data.amount}\n`;
+          if (data.customerFee && data.customerFee > 0) {
+            receiptMessage += `WhaPay fee: ${currency || 'KES'} ${data.customerFee}\n`;
+            receiptMessage += `Total paid: ${currency || 'KES'} ${data.totalPaid}\n`;
+          }
+          receiptMessage += `\nMerchant: ${data.merchantCode}\n`;
+          receiptMessage += `\nThank you for using WhaPay!`;
+          
+          // Send WhatsApp message (opens chat)
+          const waLink = `https://wa.me/${data.customerPhone}?text=${encodeURIComponent(receiptMessage)}`;
+          console.log(`Receipt link: ${waLink}`);
+        }
+      } else {
+        console.log(`⚠️ Transaction not found for tx_ref: ${tx_ref}`);
+      }
+    } else {
+      console.log(`Webhook event: ${event.event || 'unknown'} - status: ${event.status}`);
+    }
+    
+    // Always respond with 200 to acknowledge receipt
+    res.status(200).json({ status: "success", message: "Webhook received" });
+    
+  } catch (error) {
+    console.error("Webhook error:", error);
+    // Still return 200 to prevent Flutterwave from retrying
+    res.status(200).json({ status: "error", message: error.message });
+  }
 });
+
 // ---------- API endpoints ----------
 app.post("/api/register", async (req, res) => {
   try {
