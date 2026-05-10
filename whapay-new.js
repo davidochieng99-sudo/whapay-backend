@@ -2163,6 +2163,645 @@ app.get('/developer/status', async (req, res) => {
   `);
 });
 
+// ========== FLUTTERWAVE PAYMENT INTEGRATION ==========
+// Supports: Visa, Mastercard, Amex, M-Pesa, Airtel, MTN, Tigo, Orange, Vodafone
+
+// Initialize Flutterwave
+let flw = null;
+
+function initFlutterwave() {
+  if (!flw && process.env.FLUTTERWAVE_SECRET_KEY) {
+    const Flutterwave = require('flutterwave-node-v3');
+    flw = new Flutterwave(process.env.FLUTTERWAVE_PUBLIC_KEY, process.env.FLUTTERWAVE_SECRET_KEY);
+    console.log("✅ Flutterwave initialized");
+  }
+  return flw;
+}
+
+// Helper: Detect country and network from phone number
+function detectCountryFromPhone(phoneNumber) {
+  const cleanPhone = phoneNumber.replace(/\D/g, '');
+  if (cleanPhone.startsWith('254')) return { country: 'KE', currency: 'KES', defaultNetwork: 'MPS' };
+  if (cleanPhone.startsWith('256')) return { country: 'UG', currency: 'UGX', defaultNetwork: 'AIRTEL' };
+  if (cleanPhone.startsWith('255')) return { country: 'TZ', currency: 'TZS', defaultNetwork: 'AIRTEL' };
+  if (cleanPhone.startsWith('233')) return { country: 'GH', currency: 'GHS', defaultNetwork: 'MTN' };
+  if (cleanPhone.startsWith('250')) return { country: 'RW', currency: 'RWF', defaultNetwork: 'MTN' };
+  if (cleanPhone.startsWith('237')) return { country: 'CM', currency: 'XAF', defaultNetwork: 'MTN' };
+  if (cleanPhone.startsWith('225')) return { country: 'CI', currency: 'XOF', defaultNetwork: 'ORANGE' };
+  if (cleanPhone.startsWith('221')) return { country: 'SN', currency: 'XOF', defaultNetwork: 'ORANGE' };
+  return { country: 'KE', currency: 'KES', defaultNetwork: 'MPS' };
+}
+
+// Helper: Calculate customer fee for non-M-Pesa mobile money
+function calculateMobileMoneyFee(amount) {
+  if (amount <= 500) return 10;
+  if (amount <= 2000) return 20;
+  if (amount <= 5000) return 30;
+  if (amount <= 10000) return 50;
+  return 100;
+}
+
+// Helper: Calculate card fee (1.5% + KES 20)
+function calculateCardFee(amount) {
+  return (amount * 0.015) + 20;
+}
+
+// ========== 1. CARD PAYMENT (Visa, Mastercard, Amex) ==========
+app.post("/api/card/charge", async (req, res) => {
+  try {
+    const { merchantCode, amount, customerEmail, customerName, customerPhone, redirectUrl } = req.body;
+    
+    if (!merchantCode || !amount) {
+      return res.status(400).json({ error: "Missing required fields" });
+    }
+    
+    // Get merchant
+    const merchants = await db.collection("users").where("dkCode", "==", merchantCode).get();
+    if (merchants.empty) {
+      return res.status(404).json({ error: "Merchant not found" });
+    }
+    const merchant = merchants.docs[0].data();
+    
+    // Calculate fee
+    const fee = calculateCardFee(parseFloat(amount));
+    const totalAmount = parseFloat(amount) + fee;
+    
+    // Initialize Flutterwave
+    const flutterwave = initFlutterwave();
+    if (!flutterwave) {
+      return res.status(500).json({ error: "Flutterwave not configured. Add FLUTTERWAVE_PUBLIC_KEY and FLUTTERWAVE_SECRET_KEY to environment variables." });
+    }
+    
+    const tx_ref = `CARD_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+    
+    const payload = {
+      tx_ref: tx_ref,
+      amount: totalAmount,
+      currency: "KES",
+      redirect_url: redirectUrl || 'https://whapay.space/payment-callback',
+      customer: {
+        email: customerEmail || `${customerPhone || tx_ref}@whapay.user`,
+        name: customerName || "WhaPay Customer",
+        phonenumber: customerPhone || null
+      },
+      customizations: {
+        title: "WhaPay Payment",
+        description: `Payment to ${merchant.fullname || merchantCode}`,
+        logo: "https://whapay.space/logo.png"
+      },
+      meta: {
+        merchantCode: merchantCode,
+        merchantAmount: amount,
+        whapayFee: fee
+      }
+    };
+    
+    console.log(`💰 Initiating card payment: KES ${totalAmount} to merchant ${merchantCode}`);
+    
+    const response = await flutterwave.Payment.initialize(payload);
+    
+    if (response.status === 'success') {
+      const transactionId = `CARD_${Date.now()}`;
+      await db.collection("transactions").add({
+        transactionId: transactionId,
+        type: "card",
+        merchantCode: merchantCode,
+        merchantName: merchant.fullname,
+        amount: parseFloat(amount),
+        fee: fee,
+        totalPaid: totalAmount,
+        customerEmail: customerEmail,
+        customerName: customerName || "Guest",
+        customerPhone: customerPhone,
+        status: "pending",
+        flutterwaveRef: response.data?.flw_ref,
+        tx_ref: tx_ref,
+        paymentLink: response.data.link,
+        createdAt: new Date().toISOString()
+      });
+      
+      res.json({
+        success: true,
+        paymentLink: response.data.link,
+        transactionId: transactionId,
+        amount: amount,
+        fee: fee,
+        total: totalAmount
+      });
+    } else {
+      throw new Error(response.message || "Card payment failed");
+    }
+    
+  } catch (error) {
+    console.error("Card payment error:", error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ========== 2. M-PESA CHARGE (No customer fee) ==========
+app.post("/api/mpesa/charge", async (req, res) => {
+  try {
+    const { merchantCode, customerPhone, customerName, amount } = req.body;
+    
+    if (!merchantCode || !customerPhone || !amount) {
+      return res.status(400).json({ error: "Missing required fields" });
+    }
+    
+    // Clean phone number
+    let cleanPhone = customerPhone.replace(/\D/g, '');
+    if (cleanPhone.startsWith('0')) cleanPhone = '254' + cleanPhone.substring(1);
+    if (!cleanPhone.startsWith('254')) cleanPhone = '254' + cleanPhone;
+    
+    // Get merchant
+    const merchants = await db.collection("users").where("dkCode", "==", merchantCode).get();
+    if (merchants.empty) {
+      return res.status(404).json({ error: "Merchant not found" });
+    }
+    const merchant = merchants.docs[0].data();
+    
+    // Initialize Flutterwave
+    const flutterwave = initFlutterwave();
+    if (!flutterwave) {
+      return res.status(500).json({ error: "Flutterwave not configured. Add FLUTTERWAVE_PUBLIC_KEY and FLUTTERWAVE_SECRET_KEY to environment variables." });
+    }
+    
+    const tx_ref = `MPESA_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+    
+    const payload = {
+      tx_ref: tx_ref,
+      amount: parseFloat(amount),
+      currency: "KES",
+      phone_number: cleanPhone,
+      email: customerName ? `${customerName.replace(/\s/g, '')}@whapay.user` : "customer@whapay.space",
+      fullname: customerName || "WhaPay Customer",
+      network: "MPS",
+      country: "KE"
+    };
+    
+    console.log(`💰 Initiating M-Pesa charge: KES ${amount} to ${cleanPhone}`);
+    
+    const response = await flutterwave.MobileMoney.charge(payload);
+    
+    if (response.status === 'success') {
+      const transactionId = `MPESA_${Date.now()}`;
+      await db.collection("transactions").add({
+        transactionId: transactionId,
+        type: "mpesa",
+        merchantCode: merchantCode,
+        merchantName: merchant.fullname,
+        amount: parseFloat(amount),
+        customerPhone: cleanPhone,
+        customerName: customerName || "Guest",
+        status: "pending",
+        customerFee: 0,
+        totalPaid: parseFloat(amount),
+        merchantReceives: parseFloat(amount),
+        flutterwaveRef: response.data?.flw_ref,
+        tx_ref: tx_ref,
+        createdAt: new Date().toISOString()
+      });
+      
+      res.json({
+        success: true,
+        message: "STK Push sent. Check your phone for M-Pesa prompt.",
+        transactionId: transactionId
+      });
+    } else {
+      throw new Error(response.message || "Payment failed");
+    }
+    
+  } catch (error) {
+    console.error("M-Pesa error:", error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ========== 3. UNIVERSAL MOBILE MONEY (Airtel, MTN, Tigo, Orange, Vodafone) ==========
+app.post("/api/mobile-money/charge", async (req, res) => {
+  try {
+    const { merchantCode, customerPhone, customerName, amount, network, email } = req.body;
+    
+    if (!merchantCode || !customerPhone || !amount) {
+      return res.status(400).json({ error: "Missing required fields" });
+    }
+    
+    // Detect country from phone number
+    const { country, currency, defaultNetwork } = detectCountryFromPhone(customerPhone);
+    const selectedNetwork = network || defaultNetwork;
+    
+    // Clean phone number for the detected country
+    let cleanPhone = customerPhone.replace(/\D/g, '');
+    if (cleanPhone.startsWith('0')) {
+      if (country === 'KE') cleanPhone = '254' + cleanPhone.substring(1);
+      else if (country === 'UG') cleanPhone = '256' + cleanPhone.substring(1);
+      else if (country === 'TZ') cleanPhone = '255' + cleanPhone.substring(1);
+      else if (country === 'GH') cleanPhone = '233' + cleanPhone.substring(1);
+      else if (country === 'RW') cleanPhone = '250' + cleanPhone.substring(1);
+      else if (country === 'CM') cleanPhone = '237' + cleanPhone.substring(1);
+    }
+    
+    // Calculate customer fee
+    const customerFee = calculateMobileMoneyFee(parseFloat(amount));
+    const totalAmount = parseFloat(amount) + customerFee;
+    
+    // Get merchant
+    const merchants = await db.collection("users").where("dkCode", "==", merchantCode).get();
+    if (merchants.empty) {
+      return res.status(404).json({ error: "Merchant not found" });
+    }
+    const merchant = merchants.docs[0].data();
+    
+    // Initialize Flutterwave
+    const flutterwave = initFlutterwave();
+    if (!flutterwave) {
+      return res.status(500).json({ error: "Flutterwave not configured." });
+    }
+    
+    const tx_ref = `MM_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+    
+    const payload = {
+      tx_ref: tx_ref,
+      amount: totalAmount,
+      currency: currency,
+      phone_number: cleanPhone,
+      email: email || `${cleanPhone}@whapay.user`,
+      fullname: customerName || "WhaPay Customer",
+      network: selectedNetwork,
+      country: country,
+      meta: {
+        merchant_code: merchantCode,
+        merchant_name: merchant.fullname,
+        original_amount: amount,
+        customer_fee: customerFee
+      }
+    };
+    
+    console.log(`💰 Initiating ${selectedNetwork} payment: ${totalAmount} ${currency} to ${cleanPhone}`);
+    
+    const response = await flutterwave.MobileMoney.charge(payload);
+    
+    if (response.status === 'success') {
+      const transactionId = `MM_${Date.now()}`;
+      await db.collection("transactions").add({
+        transactionId: transactionId,
+        type: "mobile_money",
+        network: selectedNetwork,
+        country: country,
+        currency: currency,
+        merchantCode: merchantCode,
+        merchantName: merchant.fullname,
+        originalAmount: parseFloat(amount),
+        customerFee: customerFee,
+        totalPaid: totalAmount,
+        merchantReceives: parseFloat(amount),
+        customerPhone: cleanPhone,
+        customerName: customerName || "Guest",
+        status: "pending",
+        flutterwaveRef: response.data?.flw_ref,
+        tx_ref: tx_ref,
+        createdAt: new Date().toISOString()
+      });
+      
+      res.json({
+        success: true,
+        message: `${selectedNetwork} payment initiated! Check your phone.`,
+        transactionId: transactionId,
+        amount: amount,
+        fee: customerFee,
+        total: totalAmount,
+        currency: currency
+      });
+    } else {
+      throw new Error(response.message || `${selectedNetwork} payment failed`);
+    }
+    
+  } catch (error) {
+    console.error("Mobile money error:", error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ========== 4. ALIAS ENDPOINTS FOR SPECIFIC NETWORKS ==========
+
+app.post("/api/airtel/charge", async (req, res) => {
+  try {
+    const { merchantCode, customerPhone, customerName, amount, email } = req.body;
+    const flutterwave = initFlutterwave();
+    if (!flutterwave) {
+      return res.status(500).json({ error: "Flutterwave not configured" });
+    }
+    
+    let cleanPhone = customerPhone.replace(/\D/g, '');
+    if (cleanPhone.startsWith('0')) cleanPhone = '254' + cleanPhone.substring(1);
+    if (!cleanPhone.startsWith('254')) cleanPhone = '254' + cleanPhone;
+    
+    const customerFee = calculateMobileMoneyFee(parseFloat(amount));
+    const totalAmount = parseFloat(amount) + customerFee;
+    const tx_ref = `AIRTEL_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+    
+    const payload = {
+      tx_ref: tx_ref,
+      amount: totalAmount,
+      currency: "KES",
+      phone_number: cleanPhone,
+      email: email || `${cleanPhone}@whapay.user`,
+      fullname: customerName || "WhaPay Customer",
+      network: "AIRTEL",
+      country: "KE",
+      meta: { original_amount: amount, customer_fee: customerFee }
+    };
+    
+    const response = await flutterwave.MobileMoney.charge(payload);
+    
+    if (response.status === 'success') {
+      await db.collection("transactions").add({
+        transactionId: tx_ref,
+        type: "airtel",
+        merchantCode: merchantCode,
+        amount: parseFloat(amount),
+        customerFee: customerFee,
+        totalPaid: totalAmount,
+        customerPhone: cleanPhone,
+        status: "pending",
+        createdAt: new Date().toISOString()
+      });
+      res.json({ success: true, message: "Airtel Money payment initiated!", transactionId: tx_ref });
+    } else {
+      throw new Error(response.message || "Airtel payment failed");
+    }
+  } catch (error) {
+    console.error("Airtel error:", error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.post("/api/mtn/charge", async (req, res) => {
+  try {
+    const { merchantCode, customerPhone, customerName, amount, email } = req.body;
+    const flutterwave = initFlutterwave();
+    if (!flutterwave) {
+      return res.status(500).json({ error: "Flutterwave not configured" });
+    }
+    
+    let cleanPhone = customerPhone.replace(/\D/g, '');
+    if (cleanPhone.startsWith('0')) cleanPhone = '256' + cleanPhone.substring(1);
+    if (!cleanPhone.startsWith('256')) cleanPhone = '256' + cleanPhone;
+    
+    const customerFee = calculateMobileMoneyFee(parseFloat(amount));
+    const totalAmount = parseFloat(amount) + customerFee;
+    const tx_ref = `MTN_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+    
+    const payload = {
+      tx_ref: tx_ref,
+      amount: totalAmount,
+      currency: "UGX",
+      phone_number: cleanPhone,
+      email: email || `${cleanPhone}@whapay.user`,
+      fullname: customerName || "WhaPay Customer",
+      network: "MTN",
+      country: "UG",
+      meta: { original_amount: amount, customer_fee: customerFee }
+    };
+    
+    const response = await flutterwave.MobileMoney.charge(payload);
+    
+    if (response.status === 'success') {
+      await db.collection("transactions").add({
+        transactionId: tx_ref,
+        type: "mtn",
+        merchantCode: merchantCode,
+        amount: parseFloat(amount),
+        customerFee: customerFee,
+        totalPaid: totalAmount,
+        customerPhone: cleanPhone,
+        status: "pending",
+        createdAt: new Date().toISOString()
+      });
+      res.json({ success: true, message: "MTN Mobile Money payment initiated!", transactionId: tx_ref });
+    } else {
+      throw new Error(response.message || "MTN payment failed");
+    }
+  } catch (error) {
+    console.error("MTN error:", error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.post("/api/tigo/charge", async (req, res) => {
+  try {
+    const { merchantCode, customerPhone, customerName, amount, email } = req.body;
+    const flutterwave = initFlutterwave();
+    if (!flutterwave) {
+      return res.status(500).json({ error: "Flutterwave not configured" });
+    }
+    
+    let cleanPhone = customerPhone.replace(/\D/g, '');
+    if (cleanPhone.startsWith('0')) cleanPhone = '255' + cleanPhone.substring(1);
+    if (!cleanPhone.startsWith('255')) cleanPhone = '255' + cleanPhone;
+    
+    const customerFee = calculateMobileMoneyFee(parseFloat(amount));
+    const totalAmount = parseFloat(amount) + customerFee;
+    const tx_ref = `TIGO_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+    
+    const payload = {
+      tx_ref: tx_ref,
+      amount: totalAmount,
+      currency: "TZS",
+      phone_number: cleanPhone,
+      email: email || `${cleanPhone}@whapay.user`,
+      fullname: customerName || "WhaPay Customer",
+      network: "TIGO",
+      country: "TZ",
+      meta: { original_amount: amount, customer_fee: customerFee }
+    };
+    
+    const response = await flutterwave.MobileMoney.charge(payload);
+    
+    if (response.status === 'success') {
+      await db.collection("transactions").add({
+        transactionId: tx_ref,
+        type: "tigo",
+        merchantCode: merchantCode,
+        amount: parseFloat(amount),
+        customerFee: customerFee,
+        totalPaid: totalAmount,
+        customerPhone: cleanPhone,
+        status: "pending",
+        createdAt: new Date().toISOString()
+      });
+      res.json({ success: true, message: "Tigo Pesa payment initiated!", transactionId: tx_ref });
+    } else {
+      throw new Error(response.message || "Tigo payment failed");
+    }
+  } catch (error) {
+    console.error("Tigo error:", error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.post("/api/orange/charge", async (req, res) => {
+  try {
+    const { merchantCode, customerPhone, customerName, amount, email, country } = req.body;
+    const flutterwave = initFlutterwave();
+    if (!flutterwave) {
+      return res.status(500).json({ error: "Flutterwave not configured" });
+    }
+    
+    const countryCode = country || 'CI';
+    const currency = (countryCode === 'SN' || countryCode === 'CI') ? 'XOF' : 'XAF';
+    const customerFee = calculateMobileMoneyFee(parseFloat(amount));
+    const totalAmount = parseFloat(amount) + customerFee;
+    const tx_ref = `ORANGE_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+    
+    const payload = {
+      tx_ref: tx_ref,
+      amount: totalAmount,
+      currency: currency,
+      phone_number: customerPhone,
+      email: email || `${customerPhone.replace(/\D/g, '')}@whapay.user`,
+      fullname: customerName || "WhaPay Customer",
+      network: "ORANGE",
+      country: countryCode,
+      meta: { original_amount: amount, customer_fee: customerFee }
+    };
+    
+    const response = await flutterwave.MobileMoney.charge(payload);
+    
+    if (response.status === 'success') {
+      await db.collection("transactions").add({
+        transactionId: tx_ref,
+        type: "orange",
+        merchantCode: merchantCode,
+        amount: parseFloat(amount),
+        customerFee: customerFee,
+        totalPaid: totalAmount,
+        customerPhone: customerPhone,
+        status: "pending",
+        createdAt: new Date().toISOString()
+      });
+      res.json({ success: true, message: "Orange Money payment initiated!", transactionId: tx_ref });
+    } else {
+      throw new Error(response.message || "Orange payment failed");
+    }
+  } catch (error) {
+    console.error("Orange error:", error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ========== 5. VERIFY TRANSACTION STATUS ==========
+app.get("/api/verify/:transactionId", async (req, res) => {
+  try {
+    const { transactionId } = req.params;
+    const transaction = await db.collection("transactions").doc(transactionId).get();
+    
+    if (!transaction.exists) {
+      return res.status(404).json({ error: "Transaction not found" });
+    }
+    
+    res.json({
+      success: true,
+      status: transaction.data().status,
+      amount: transaction.data().amount,
+      merchantCode: transaction.data().merchantCode
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ========== 6. FLUTTERWAVE WEBHOOK (Payment confirmation) ==========
+app.post("/api/flutterwave-webhook", async (req, res) => {
+  console.log("📥 Flutterwave webhook received:", req.body);
+  
+  try {
+    const event = req.body;
+    const isSuccessful = event.status === 'successful' || event.data?.status === 'successful';
+    
+    if (isSuccessful && event.data?.tx_ref) {
+      const tx_ref = event.data.tx_ref;
+      const flutterwaveRef = event.data.flw_ref;
+      
+      const transactions = await db.collection("transactions")
+        .where("tx_ref", "==", tx_ref)
+        .get();
+      
+      if (!transactions.empty) {
+        const transaction = transactions.docs[0];
+        const data = transaction.data();
+        
+        await transaction.ref.update({
+          status: "completed",
+          flutterwaveRef: flutterwaveRef,
+          completedAt: new Date().toISOString()
+        });
+        
+        console.log(`✅ Transaction ${tx_ref} completed`);
+        
+        if (data.customerPhone) {
+          let receiptMessage = `✅ Payment successful!\n\n`;
+          receiptMessage += `Amount: ${data.currency || 'KES'} ${data.originalAmount || data.amount}\n`;
+          if (data.customerFee && data.customerFee > 0) {
+            receiptMessage += `Fee: ${data.currency || 'KES'} ${data.customerFee}\n`;
+            receiptMessage += `Total: ${data.currency || 'KES'} ${data.totalPaid}\n`;
+          }
+          receiptMessage += `\nMerchant: ${data.merchantCode}\nThank you for using WhaPay!`;
+          
+          await sendWhatsAppMessage(data.customerPhone, receiptMessage);
+        }
+      }
+    }
+    
+    res.status(200).json({ status: "success" });
+  } catch (error) {
+    console.error("Webhook error:", error);
+    res.status(200).json({ status: "error", message: error.message });
+  }
+});
+
+// ========== 7. TEST ENDPOINT ==========
+app.get("/api/flutterwave-test", async (req, res) => {
+  const flutterwave = initFlutterwave();
+  if (!flutterwave) {
+    return res.json({ 
+      success: false, 
+      error: "Flutterwave not configured. Add FLUTTERWAVE_PUBLIC_KEY and FLUTTERWAVE_SECRET_KEY to environment variables." 
+    });
+  }
+  
+  try {
+    const banks = await flutterwave.Misc.getBanks({ country: "KE" });
+    res.json({ 
+      success: true, 
+      message: "Flutterwave is working!",
+      banksCount: banks.data?.length || 0
+    });
+  } catch (error) {
+    res.json({ success: false, error: error.message });
+  }
+});
+
+// ========== 8. GET SUPPORTED NETWORKS ==========
+app.get("/api/payment-methods", async (req, res) => {
+  res.json({
+    success: true,
+    methods: {
+      cards: ['Visa', 'Mastercard', 'American Express'],
+      mobile_money: {
+        'KE': ['M-Pesa', 'Airtel Money'],
+        'UG': ['Airtel', 'MTN'],
+        'TZ': ['Airtel', 'Tigo', 'Halopesa'],
+        'GH': ['MTN', 'Vodafone', 'AirtelTigo'],
+        'RW': ['Airtel', 'MTN'],
+        'CM': ['MTN', 'Orange'],
+        'CI': ['MTN', 'Orange', 'Moov'],
+        'SN': ['Orange', 'Free Money']
+      }
+    }
+  });
+});
+
+
 // Serve static SDK files
 app.use('/sdk', express.static('sdk'));
 // Start server
