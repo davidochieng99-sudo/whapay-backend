@@ -390,6 +390,72 @@ app.post("/api/directory/verify", async (req, res) => {
     }
 });
 
+// ========== MERCHANT DIRECTORY SAVE ==========
+app.post("/api/directory/save", async (req, res) => {
+    try {
+        const { merchantCode, businessName, category, categoryName, location, locationName, area, description, phone, image, premium, priceRange, website, hours } = req.body;
+
+        if (!merchantCode || !businessName) {
+            return res.status(400).json({ success: false, error: "Missing required fields" });
+        }
+
+        // Re-verify the merchant (must have a recent paid transaction)
+        const lastTxQuery = await db.collection("transactions")
+            .where("merchantCode", "==", merchantCode)
+            .where("method", "!=", "mpesa")
+            .where("status", "==", "completed")
+            .orderBy("createdAt", "desc")
+            .limit(1)
+            .get();
+
+        if (lastTxQuery.empty) {
+            return res.status(403).json({ success: false, error: "No PAID transaction found. M-Pesa payments do not qualify." });
+        }
+
+        const lastTx = lastTxQuery.docs[0].data();
+        const daysSince = (Date.now() - new Date(lastTx.createdAt).getTime()) / (1000*60*60*24);
+        if (daysSince > 30) {
+            return res.status(403).json({ success: false, error: "Last paid transaction is older than 30 days. Make a new paid payment to keep listing active." });
+        }
+
+        // Prepare document
+        const listingData = {
+            merchantCode,
+            businessName,
+            category,
+            categoryName: categoryName || "",
+            location,
+            locationName: locationName || "",
+            area: area || "",
+            description: description || "",
+            phone: phone || "",
+            image: image || "🏪",
+            premium: premium === true || premium === "true",
+            priceRange: priceRange || "KES 100 - 5000",
+            website: website || "",
+            hours: hours || "",
+            status: "active",
+            lastTransaction: lastTx.createdAt,
+            lastMethod: lastTx.method,
+            updatedAt: new Date().toISOString()
+        };
+
+        // Upsert (update if exists, else create)
+        const existing = await db.collection("directory_listings").where("merchantCode", "==", merchantCode).get();
+        if (existing.empty) {
+            await db.collection("directory_listings").add(listingData);
+        } else {
+            await existing.docs[0].ref.update(listingData);
+        }
+
+        res.json({ success: true, message: "Directory listing saved! It will appear on WhaPay within minutes." });
+    } catch (error) {
+        console.error("Save directory error:", error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+
 
 // Get merchant's products
 app.get("/api/merchant/products", async (req, res) => {
