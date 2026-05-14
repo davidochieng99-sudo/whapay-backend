@@ -288,6 +288,44 @@ app.get("/api/directory/merchants", async (req, res) => {
     }
 });
 
+app.get("/directory/merchant/:code", async (req, res) => {
+    const { code } = req.params;
+    try {
+        const merchantDoc = await db.collection("directory_listings")
+            .where("merchantCode", "==", code)
+            .where("status", "==", "active")
+            .limit(1)
+            .get();
+        if (merchantDoc.empty) return res.status(404).send("Merchant not found");
+        const m = merchantDoc.docs[0].data();
+        res.send(`<!DOCTYPE html>
+        <html>
+        <head><title>${m.businessName} - Pay with M-Pesa or Card | WhaPay</title>
+        <meta name="description" content="Pay ${m.businessName} using M-Pesa, Visa, or Mastercard. Member Code: ${code}. Located in ${m.locationName}.">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <link rel="stylesheet" href="https://cdn.tailwindcss.com">
+        </head>
+        <body class="bg-gray-100">
+        <div class="max-w-2xl mx-auto p-6">
+            <div class="bg-white rounded-2xl shadow-lg p-6">
+                <h1 class="text-2xl font-bold">${m.businessName}</h1>
+                <p class="text-gray-600">📍 ${m.locationName} ${m.area ? `- ${m.area}` : ''}</p>
+                <div class="mt-2"><span class="bg-green-100 text-green-700 px-2 py-1 rounded-full text-sm">${m.categoryName || m.category}</span></div>
+                <p class="mt-3">${m.description || ''}</p>
+                <div class="mt-4 p-3 bg-gray-50 rounded-lg">
+                    <strong>Member Code:</strong> ${code}<br>
+                    <button onclick="navigator.clipboard.writeText('${code}')" class="mt-1 bg-gray-200 px-3 py-1 rounded text-sm">Copy Code</button>
+                </div>
+                <a href="/payment.html?merchant=${code}" class="mt-4 inline-block bg-green-600 text-white px-5 py-2 rounded-full">💳 Pay Now</a>
+                <p class="text-xs text-gray-400 mt-4">Powered by WhaPay – Accepts M-Pesa, Cards, Airtel, MTN, Tigo, Orange</p>
+            </div>
+        </div>
+        </body>
+        </html>`);
+    } catch(e) {
+        res.status(500).send("Error");
+    }
+});
 
 // Get merchant's products
 app.get("/api/merchant/products", async (req, res) => {
