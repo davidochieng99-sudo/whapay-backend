@@ -273,6 +273,22 @@ app.post("/api/merchant/product", async (req, res) => {
   }
 });
 
+app.get("/api/directory/merchants", async (req, res) => {
+    try {
+        const thirtyDaysAgo = new Date(Date.now() - 30*24*60*60*1000);
+        const snapshot = await db.collection("directory_listings")
+            .where("status", "==", "active")
+            .where("lastTransaction", ">=", thirtyDaysAgo)
+            .get();
+        const merchants = [];
+        snapshot.forEach(doc => merchants.push({ id: doc.id, ...doc.data() }));
+        res.json({ success: true, merchants });
+    } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+
 // Get merchant's products
 app.get("/api/merchant/products", async (req, res) => {
   try {
