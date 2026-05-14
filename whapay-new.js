@@ -327,6 +327,70 @@ app.get("/directory/merchant/:code", async (req, res) => {
     }
 });
 
+// ========== MERCHANT DIRECTORY VERIFY ==========
+app.post("/api/directory/verify", async (req, res) => {
+    try {
+        const { merchantCode } = req.body;
+        if (!merchantCode) return res.status(400).json({ success: false, error: "Member Code required" });
+
+        // Find merchant in users collection
+        const userQuery = await db.collection("users").where("dkCode", "==", merchantCode).get();
+        if (userQuery.empty) return res.status(404).json({ success: false, error: "Member Code not found" });
+        const merchantData = userQuery.docs[0].data();
+
+        // Check last PAID transaction (method NOT 'mpesa') AND status 'completed' within 30 days
+        const lastTxQuery = await db.collection("transactions")
+            .where("merchantCode", "==", merchantCode)
+            .where("method", "!=", "mpesa")
+            .where("status", "==", "completed")
+            .orderBy("createdAt", "desc")
+            .limit(1)
+            .get();
+
+        let isActive = false;
+        let lastTransactionDate = null;
+        let lastMethod = null;
+
+        if (!lastTxQuery.empty) {
+            const lastTx = lastTxQuery.docs[0].data();
+            lastTransactionDate = lastTx.createdAt;
+            lastMethod = lastTx.method;
+            const daysSince = (Date.now() - new Date(lastTx.createdAt).getTime()) / (1000*60*60*24);
+            if (daysSince <= 30) isActive = true;
+        }
+
+        if (!isActive) {
+            return res.status(403).json({
+                success: false,
+                error: "You need at least one successful PAID transaction (card, Airtel, MTN, Tigo, Orange, or Bank Transfer) in the last 30 days to claim a directory listing. M-Pesa payments do not count."
+            });
+        }
+
+        // Check if already has a directory listing
+        const existingListing = await db.collection("directory_listings")
+            .where("merchantCode", "==", merchantCode)
+            .limit(1)
+            .get();
+
+        res.json({
+            success: true,
+            verified: true,
+            merchant: {
+                businessName: merchantData.fullname || "",
+                phone: merchantData.phoneNumber || "",
+                merchantCode: merchantCode,
+                lastTransaction: lastTransactionDate,
+                lastMethod: lastMethod
+            },
+            existingListing: existingListing.empty ? null : existingListing.docs[0].data()
+        });
+    } catch (error) {
+        console.error("Verify error:", error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+
 // Get merchant's products
 app.get("/api/merchant/products", async (req, res) => {
   try {
