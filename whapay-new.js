@@ -1654,6 +1654,66 @@ app.post("/api/register-pay-v2", async (req, res) => {
   }
 });
 
+// ========== MOBILE MONEY V2 (NO EXTRA FEE) ==========
+app.post("/api/mobile-money/charge-v2", async (req, res) => {
+  try {
+    const { merchantCode, customerPhone, customerName, amount, network, country, currency } = req.body;
+    if (!merchantCode || !customerPhone || !amount || !network) {
+      return res.status(400).json({ success: false, error: "Missing required fields" });
+    }
+    const flutterwave = initFlutterwave();
+    if (!flutterwave) {
+      return res.status(500).json({ success: false, error: "Flutterwave not configured" });
+    }
+    let cleanPhone = customerPhone.replace(/\D/g, '');
+    if (cleanPhone.startsWith('0')) {
+      if (country === 'KE') cleanPhone = '254' + cleanPhone.substring(1);
+      else if (country === 'UG') cleanPhone = '256' + cleanPhone.substring(1);
+      else if (country === 'TZ') cleanPhone = '255' + cleanPhone.substring(1);
+    }
+    const tx_ref = `MMV2_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+    const totalAmount = parseFloat(amount); // frontend already added fee
+    const payload = {
+      tx_ref,
+      amount: totalAmount,
+      currency: currency || "KES",
+      phone_number: cleanPhone,
+      email: `${merchantCode}@whapay.space`,
+      fullname: customerName || "WhaPay Customer",
+      network: network.toUpperCase(),
+      country: country || "KE",
+      meta: { merchant_code: merchantCode }
+    };
+    let response;
+    switch (network.toUpperCase()) {
+      case 'AIRTEL': response = await flutterwave.MobileMoney.airtel(payload); break;
+      case 'MTN': response = await flutterwave.MobileMoney.mtn(payload); break;
+      case 'TIGO': response = await flutterwave.MobileMoney.tigo(payload); break;
+      case 'ORANGE': response = await flutterwave.MobileMoney.orange(payload); break;
+      case 'VODAFONE': response = await flutterwave.MobileMoney.vodafone(payload); break;
+      default: throw new Error("Unsupported network");
+    }
+    if (response.status === 'success') {
+      await db.collection("transactions").add({
+        transactionId: tx_ref,
+        merchantCode,
+        customerPhone: cleanPhone,
+        customerName: customerName || "Guest",
+        amount: totalAmount,
+        method: network.toLowerCase(),
+        status: "pending",
+        flutterwaveRef: response.data?.flw_ref,
+        createdAt: new Date().toISOString()
+      });
+      res.json({ success: true, message: `${network} payment initiated`, tx_ref });
+    } else {
+      throw new Error(response.message || "Payment failed");
+    }
+  } catch (error) {
+    console.error("Mobile money v2 error:", error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
 
 // ========== 4. CHECK TRANSACTION STATUS ==========
 app.get("/api/transaction/status/:transactionId", async (req, res) => {
