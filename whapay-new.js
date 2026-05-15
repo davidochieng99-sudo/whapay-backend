@@ -1599,6 +1599,61 @@ app.post("/api/card/charge", async (req, res) => {
   }
 });
 
+// ========== REGISTER & PAY V2 (returns memberCode) ==========
+app.post("/api/register-pay-v2", async (req, res) => {
+  try {
+    const { fullname, phoneNumber, amount, paymentMethod, registerUser } = req.body;
+    if (!fullname || !phoneNumber || !amount) {
+      return res.status(400).json({ success: false, error: "Missing required fields" });
+    }
+    let normalizedPhone = phoneNumber.replace(/^0+/, "254");
+    if (!normalizedPhone.startsWith("254")) normalizedPhone = "254" + normalizedPhone;
+    let memberCode = null;
+    let user = null;
+    if (registerUser === true) {
+      const existing = await db.collection("users").where("phoneNumber", "==", normalizedPhone).get();
+      if (existing.empty) {
+        const dkCode = await getNextDkCode();
+        const qrData = `https://whapay-backend.onrender.com/pay?code=${dkCode}`;
+        const qrImage = await generateQRCode(qrData);
+        const newUser = {
+          phoneNumber: normalizedPhone,
+          fullname: fullname,
+          dkCode,
+          qrCodeUrl: qrImage,
+          userType: "customer",
+          balance: 0,
+          createdAt: new Date().toISOString()
+        };
+        const docRef = await db.collection("users").add(newUser);
+        user = { id: docRef.id, ...newUser };
+        memberCode = dkCode;
+      } else {
+        user = existing.docs[0].data();
+        memberCode = user.dkCode;
+      }
+    }
+    const transactionId = `TXN_${Date.now()}`;
+    await db.collection("transactions").add({
+      transactionId,
+      customerName: fullname,
+      customerPhone: normalizedPhone,
+      amount: parseFloat(amount),
+      paymentMethod,
+      status: "pending",
+      createdAt: new Date().toISOString()
+    });
+    res.json({
+      success: true,
+      user: user ? { dkCode: user.dkCode, qrCodeUrl: user.qrCodeUrl, fullname: user.fullname, phoneNumber: user.phoneNumber } : null,
+      memberCode
+    });
+  } catch (error) {
+    console.error("Register-pay error:", error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 
 // ========== 4. CHECK TRANSACTION STATUS ==========
 app.get("/api/transaction/status/:transactionId", async (req, res) => {
