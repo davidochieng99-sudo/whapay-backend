@@ -1548,7 +1548,56 @@ app.post("/api/orange/charge", async (req, res) => {
   }
 });
 
-
+// ========== CARD PAYMENT (NO DUPLICATE) ==========
+app.post("/api/card/charge", async (req, res) => {
+  try {
+    const { merchantCode, customerEmail, customerName, amount, currency, cardNumber, cvv, expiryMonth, expiryYear } = req.body;
+    if (!merchantCode || !customerEmail || !amount || !cardNumber || !cvv || !expiryMonth || !expiryYear) {
+      return res.status(400).json({ success: false, error: "Missing required fields" });
+    }
+    const flutterwave = initFlutterwave();
+    if (!flutterwave) {
+      return res.status(500).json({ success: false, error: "Flutterwave not configured" });
+    }
+    const tx_ref = `CARD_${Date.now()}_${Math.random().toString(36).substring(2, 10)}`;
+    const payload = {
+      card_number: cardNumber.replace(/\s/g, ''),
+      cvv,
+      expiry_month: expiryMonth,
+      expiry_year: expiryYear,
+      currency: currency || "KES",
+      amount: Math.round(amount),
+      fullname: customerName || "WhaPay Customer",
+      email: customerEmail,
+      tx_ref,
+      redirect_url: "https://whapay.space/payment-callback",
+      authorization: { mode: "pin" }
+    };
+    const response = await flutterwave.Charge.card(payload);
+    if (response.status === "success") {
+      if (response.data?.redirect_url) {
+        return res.json({ success: true, requiresAction: true, redirectUrl: response.data.redirect_url, tx_ref });
+      }
+      await db.collection("transactions").add({
+        transactionId: tx_ref,
+        merchantCode,
+        customerEmail,
+        customerName: customerName || "Guest",
+        amount,
+        method: "card",
+        status: "completed",
+        flutterwaveRef: response.data?.id,
+        createdAt: new Date().toISOString()
+      });
+      res.json({ success: true, data: response.data, tx_ref });
+    } else {
+      throw new Error(response.message || "Card payment failed");
+    }
+  } catch (error) {
+    console.error("Card error:", error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
 
 
 // ========== 4. CHECK TRANSACTION STATUS ==========
