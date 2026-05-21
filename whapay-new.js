@@ -574,11 +574,39 @@ async function sendWhatsAppMessage(phoneNumber, message) {
   return { success: true, link };
 }
 
-// Helper: send SMS (placeholder – will work after Dexatel approval)
+// ========================
+// Send SMS via Dexatel (used for receipts)
+// ========================
+const DEXATEL_API_KEY = process.env.DEXATEL_API_KEY || '6a3d10258cac03fd48bfc22cdb0eb256';
+const DEXATEL_SMS_URL = 'https://api.dexatel.com/v1/messages';
+
 async function sendSMS(phoneNumber, message) {
-  console.log(`SMS to ${phoneNumber}: ${message}`);
-  return { success: true };
+  try {
+    const response = await axios.post(
+      DEXATEL_SMS_URL,
+      {
+        data: {
+          channel: 'SMS',
+          from: 'Whapay',        // must be registered with Dexatel
+          to: [phoneNumber],
+          text: message
+        }
+      },
+      {
+        headers: {
+          'X-Dexatel-Key': DEXATEL_API_KEY,
+          'Content-Type': 'application/json'
+        }
+      }
+    );
+    console.log(`✅ SMS sent to ${phoneNumber}`);
+    return { success: true, data: response.data };
+  } catch (error) {
+    console.error(`❌ SMS failed to ${phoneNumber}:`, error.response?.data || error.message);
+    return { success: false, error: error.message };
+  }
 }
+
 
 // Register or get user by phone
 async function registerOrGetUser(phoneNumber, fullname = null, userType = "customer") {
