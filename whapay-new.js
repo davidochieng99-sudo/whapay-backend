@@ -2514,7 +2514,45 @@ app.get('/developer/status', async (req, res) => {
     </html>
   `);
 });
+// ========================
+// Twilio Incoming SMS (Customer texts to register)
+// ========================
+function generateMembershipCode() {
+  return 'DK' + Math.floor(Math.random() * 10000).toString().padStart(4, '0');
+}
 
+app.post('/api/incoming-sms', (req, res) => {
+  const customerNumber = req.body.From;
+  const messageText = req.body.Body || '';
+  console.log(`📨 SMS from ${customerNumber}: ${messageText}`);
+
+  let reply = '';
+  if (messageText.toLowerCase().includes('register')) {
+    const newCode = generateMembershipCode();
+    reply = `Welcome to WhaPay! Your membership code is: ${newCode}`;
+    // You can also store customerNumber and newCode in Firestore here
+  } else {
+    reply = 'Reply "register" to get your WhaPay membership code.';
+  }
+
+  const twiml = new MessagingResponse();
+  twiml.message(reply);
+  res.type('text/xml').send(twiml.toString());
+});
+
+// ========================
+// Twilio Incoming Voice Call (Customer calls to register)
+// ========================
+app.post('/api/incoming-call', (req, res) => {
+  const callerNumber = req.body.From;
+  console.log(`📞 Call from ${callerNumber}`);
+  const newCode = generateMembershipCode();
+  // Save to Firestore if needed
+
+  const twiml = new VoiceResponse();
+  twiml.say(`Thank you for calling WhaPay. Your membership code is ${newCode}. Please write it down.`);
+  res.type('text/xml').send(twiml.toString());
+});
 
 
 // Serve static SDK files
