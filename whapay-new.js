@@ -2582,6 +2582,34 @@ app.post('/api/incoming-call', (req, res) => {
   res.type('text/xml').send(twiml.toString());
 });
 
+// ========================
+// Outbound Voice Call via Dexatel
+// ========================
+const DEXATEL_VOICE_URL = 'https://api.dexatel.com/v1/voice_calls';
+
+app.post('/api/voice/call', async (req, res) => {
+  const { to, from = 'Whapay', text = 'Hello from WhaPay.' } = req.body;
+  if (!to) {
+    return res.status(400).json({ error: 'Missing "to" phone number' });
+  }
+  try {
+    const response = await axios.post(
+      DEXATEL_VOICE_URL,
+      { to, from, text },
+      {
+        headers: {
+          'X-Dexatel-Key': DEXATEL_API_KEY,
+          'Content-Type': 'application/json'
+        }
+      }
+    );
+    res.json({ success: true, callId: response.data?.data?.call_id });
+  } catch (error) {
+    console.error('Dexatel voice error:', error.response?.data || error.message);
+    res.status(500).json({ error: 'Voice call failed', details: error.response?.data });
+  }
+});
+
 // Serve static SDK files
 app.use('/sdk', express.static('sdk'));
 // Start server
