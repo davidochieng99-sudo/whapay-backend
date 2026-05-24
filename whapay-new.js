@@ -573,7 +573,23 @@ async function sendWhatsAppMessage(phoneNumber, message) {
   return { success: true, link };
 }
 
-
+// ========================
+// Send SMS via Twilio (used for receipts)
+// ========================
+async function sendSMS(phoneNumber, message) {
+  try {
+    const response = await twilioClient.messages.create({
+      body: message,
+      to: phoneNumber,
+      from: process.env.TWILIO_PHONE_NUMBER
+    });
+    console.log(`✅ SMS sent to ${phoneNumber}`);
+    return { success: true, sid: response.sid };
+  } catch (error) {
+    console.error(`❌ SMS failed to ${phoneNumber}:`, error.message);
+    return { success: false, error: error.message };
+  }
+}
 // Register or get user by phone
 async function registerOrGetUser(phoneNumber, fullname = null, userType = "customer") {
   let normalizedPhone = phoneNumber.replace(/^0+/, "254");
