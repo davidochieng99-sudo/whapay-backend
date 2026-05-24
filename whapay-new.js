@@ -638,40 +638,104 @@ async function saveTransaction(data) {
   return docRef.id;
 }
 
-// Send receipts
+// Send receipts with method-based fees
 async function sendConfirmations(paymentData) {
   const { transactionId, merchant, customer, amount, description, status, reason, paymentMethod } = paymentData;
+  
+  // Fees based on how customer interacted
+  let methodFee = 0;
+  let methodName = "";
+  
+  if (paymentMethod === "sms") {
+    methodFee = 30;      // Twilio SMS cost (inbound or outbound)
+    methodName = "SMS Fee";
+  } else if (paymentMethod === "voice") {
+    methodFee = 39;      // Twilio voice call cost (per minute)
+    methodName = "Voice Call Fee";
+  } else if (paymentMethod === "whatsapp") {
+    methodFee = 1;       // Meta WhatsApp cost
+    methodName = "WhatsApp Fee";
+  } else if (paymentMethod === "card" || paymentMethod === "mpesa" || paymentMethod === "mobile_money") {
+    methodFee = 0;       // No extra fee for direct payment methods (fees handled separately)
+    methodName = "";
+  }
+  
+  // Transaction fee (only if payment is involved)
+  let transactionFee = 0;
+  let totalPaid = amount;
+  
+  if (amount > 0) {
+    transactionFee = Math.round(amount * 0.03); // 3% transaction fee
+    totalPaid = amount + transactionFee + methodFee;
+  } else {
+    totalPaid = methodFee; // Registration only (no payment)
+  }
+  
+  const serviceFee = 50;   // WhaPay service fee (added to all transactions)
+  if (amount > 0) {
+    totalPaid = totalPaid + serviceFee;
+  }
+  
   const now = new Date();
   const dateTime = now.toLocaleString();
+  
+  // Build breakdown message
+  let breakdownText = `Amount: KES ${amount}\n`;
+  if (transactionFee > 0) breakdownText += `Transaction Fee (3%): KES ${transactionFee}\n`;
+  if (methodFee > 0) breakdownText += `${methodName}: KES ${methodFee}\n`;
+  if (amount > 0) breakdownText += `Service Fee: KES ${serviceFee}\n`;
+  breakdownText += `━━━━━━━━━━━━━━━━━━━━━\n*TOTAL PAID: KES ${totalPaid}*`;
+  
+  // Customer receipt
   const customerReceipt = `
-WHAPAY RECEIPT
+🏪 *WHA ${amount > 0 ? "PAYMENT" : "REGISTRATION"} RECEIPT*
+━━━━━━━━━━━━━━━━━━━━━
 Transaction: ${transactionId}
-Customer: ${customer.fullname} (${customer.dkCode})
-Merchant: ${merchant.fullname} (${merchant.dkCode})
-Amount: KES ${amount}
-Description: ${description || "Payment"}
+${amount > 0 ? `Merchant: ${merchant.fullname} (${merchant.dkCode})` : `Customer: ${customer.fullname} (${customer.dkCode})`}
+Description: ${description || (amount > 0 ? "Payment" : "Registration")}
+━━━━━━━━━━━━━━━━━━━━━
+*Breakdown:*
+${breakdownText}
+━━━━━━━━━━━━━━━━━━━━━
 Time: ${dateTime}
-Status: ${status.toUpperCase()}
+Status: ✅ ${status.toUpperCase()}
 ${reason ? `Reason: ${reason}` : ""}
-Thank you for using Whapay!`;
-  const merchantNotification = `
-PAYMENT RECEIVED
+━━━━━━━━━━━━━━━━━━━━━
+Thank you for using WhaPay!`;
+  
+  // Merchant notification (only if payment)
+  let merchantNotification = "";
+  if (amount > 0) {
+    merchantNotification = `
+💰 *PAYMENT RECEIVED*
+━━━━━━━━━━━━━━━━━━━━━
 Transaction: ${transactionId}
 Customer: ${customer.fullname} (${customer.dkCode})
 Amount: KES ${amount}
 Description: ${description || "Payment"}
 Time: ${dateTime}
-Status: ${status.toUpperCase()}`;
+━━━━━━━━━━━━━━━━━━━━━`;
+  }
+  
+  // Send based on payment method
   if (paymentMethod === "whatsapp") {
     await sendWhatsAppMessage(customer.phoneNumber, customerReceipt);
-    await sendWhatsAppMessage(merchant.phoneNumber, merchantNotification);
-  } else {
+    if (merchantNotification) await sendWhatsAppMessage(merchant.phoneNumber, merchantNotification);
+  } else if (paymentMethod === "sms") {
     await sendSMS(customer.phoneNumber, customerReceipt);
-    await sendSMS(merchant.phoneNumber, merchantNotification);
+    if (merchantNotification) await sendSMS(merchant.phoneNumber, merchantNotification);
+  } else if (paymentMethod === "voice") {
+    // For voice, you would use your voice endpoint to read the receipt
+    await sendSMS(customer.phoneNumber, customerReceipt); // Fallback to SMS for now
+    if (merchantNotification) await sendSMS(merchant.phoneNumber, merchantNotification);
+  } else {
+    // Card, M-Pesa, etc.
+    await sendSMS(customer.phoneNumber, customerReceipt);
+    if (merchantNotification) await sendSMS(merchant.phoneNumber, merchantNotification);
   }
+  
   return { customerReceipt, merchantNotification };
 }
-
 // ---------- HTML pages ----------
 app.get("/", (req, res) => {
   res.send(`<!DOCTYPE html>
