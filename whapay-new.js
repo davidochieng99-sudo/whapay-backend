@@ -2582,7 +2582,26 @@ app.post('/api/incoming-call', (req, res) => {
   res.type('text/xml').send(twiml.toString());
 });
 
-
+// ========================
+// Outbound Voice Call via Twilio
+// ========================
+app.post('/api/voice/call', async (req, res) => {
+  const { to, message = 'Hello from WhaPay.' } = req.body;
+  if (!to) {
+    return res.status(400).json({ error: 'Missing "to" phone number' });
+  }
+  try {
+    const call = await twilioClient.calls.create({
+      twiml: `<Response><Say>${message}</Say></Response>`,
+      to: to,
+      from: process.env.TWILIO_PHONE_NUMBER
+    });
+    res.json({ success: true, callSid: call.sid });
+  } catch (error) {
+    console.error('Twilio voice error:', error.message);
+    res.status(500).json({ error: 'Voice call failed', details: error.message });
+  }
+});
 
 // Serve static SDK files
 app.use('/sdk', express.static('sdk'));
