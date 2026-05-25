@@ -2596,16 +2596,20 @@ function generateMembershipCode() {
   return 'DK' + Math.floor(Math.random() * 10000).toString().padStart(4, '0');
 }
 
+
 app.post('/api/incoming-sms', (req, res) => {
-  const customerNumber = req.body.From;
-  const messageText = req.body.Body || '';
+  // Twilio sends data as form-urlencoded, not JSON
+  const customerNumber = req.body.From || req.body.from;
+  const messageText = req.body.Body || req.body.body || '';
+  
   console.log(`📨 SMS from ${customerNumber}: ${messageText}`);
+  console.log(`Full request body:`, req.body);
 
   let reply = '';
-  if (messageText.toLowerCase().includes('register')) {
-    const newCode = generateMembershipCode();
-    reply = `Welcome to WhaPay! Your membership code is: ${newCode}`;
-    // You can also store customerNumber and newCode in Firestore here
+  if (messageText && messageText.toLowerCase().includes('register')) {
+    const tempId = 'REG_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6);
+    const paymentLink = `https://whapay.space/pay.html?amount=100&purpose=registration&tempId=${tempId}&phone=${encodeURIComponent(customerNumber || '')}`;
+    reply = `Registration fee is KES 100. Click here to pay: ${paymentLink}`;
   } else {
     reply = 'Reply "register" to get your WhaPay membership code.';
   }
@@ -2614,6 +2618,7 @@ app.post('/api/incoming-sms', (req, res) => {
   twiml.message(reply);
   res.type('text/xml').send(twiml.toString());
 });
+
 
 // ========================
 // Twilio Incoming Voice Call (Customer calls to register)
