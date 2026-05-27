@@ -2311,6 +2311,9 @@ app.post("/api/register-pay", async (req, res) => {
       return res.status(400).json({ success: false, error: "Missing required fields" });
     }
 
+    // ADD KES 50 SERVICE FEE
+    const customerPayAmount = amount + 50;
+
     // Normalize phone number
     let normalizedPhone = phoneNumber.replace(/^0+/, "254");
     if (!normalizedPhone.startsWith("254")) normalizedPhone = "254" + normalizedPhone;
@@ -2340,7 +2343,6 @@ app.post("/api/register-pay", async (req, res) => {
       user = existingUsers.docs[0].data();
       user.id = existingUsers.docs[0].id;
     } else {
-      // User doesn't exist and registerUser is false – treat as guest
       user = null;
     }
 
@@ -2350,7 +2352,7 @@ app.post("/api/register-pay", async (req, res) => {
       transactionId,
       customerName: fullname,
       customerPhone: normalizedPhone,
-      amount: parseFloat(amount),
+      amount: customerPayAmount,  // ← USE THE AMOUNT WITH FEE
       paymentMethod,
       status: "pending",
       createdAt: new Date().toISOString(),
@@ -2359,54 +2361,59 @@ app.post("/api/register-pay", async (req, res) => {
     await db.collection("transactions").add(transactionData);
 
     // Initialize Paystack transaction
-const paystackSecret = process.env.PAYSTACK_SECRET_KEY;
-if (!paystackSecret) {
-  throw new Error("Paystack secret key not set");
-}
-
-const paystackResponse = await axios.post(
-  "https://api.paystack.co/transaction/initialize",
-  {
-    email: `${normalizedPhone}@whapay.space`,
-    amount: customerPayAmount * 100, // Paystack uses kobo (cents) – KES 1 = 100 kobo
-    currency: "KES",
-    metadata: {
-      customerName: fullname,
-      customerPhone: normalizedPhone,
-      transactionId: transactionId,
-      type: "registration"
-    },
-    callback_url: "https://whapay.space/payment-callback"
-  },
-  {
-    headers: {
-      Authorization: `Bearer ${paystackSecret}`,
-      "Content-Type": "application/json"
+    const paystackSecret = process.env.PAYSTACK_SECRET_KEY;
+    if (!paystackSecret) {
+      throw new Error("Paystack secret key not set");
     }
+
+    const paystackResponse = await axios.post(
+      "https://api.paystack.co/transaction/initialize",
+      {
+        email: `${normalizedPhone}@whapay.space`,
+        amount: customerPayAmount * 100, // Paystack uses kobo (cents) – KES 1 = 100 kobo
+        currency: "KES",
+        metadata: {
+          customerName: fullname,
+          customerPhone: normalizedPhone,
+          transactionId: transactionId,
+          type: "registration"
+        },
+        callback_url: "https://whapay.space/payment-callback"
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${paystackSecret}`,
+          "Content-Type": "application/json"
+        }
+      }
+    );
+
+    if (!paystackResponse.data.status) {
+      throw new Error(paystackResponse.data.message || "Paystack initialization failed");
+    }
+
+    const paymentLink = paystackResponse.data.data.authorization_url;
+
+    // Prepare response
+    const response = {
+      success: true,
+      transactionId,
+      paymentLink: paymentLink,
+      user: user ? {
+        dkCode: user.dkCode,
+        qrCodeUrl: user.qrCodeUrl,
+        fullname: user.fullname,
+        phoneNumber: user.phoneNumber,
+      } : null,
+      isNewUser,
+    };
+
+    res.json(response);
+  } catch (error) {
+    console.error("Register-pay error:", error);
+    res.status(500).json({ success: false, error: error.message });
   }
-);
-
-if (!paystackResponse.data.status) {
-  throw new Error(paystackResponse.data.message || "Paystack initialization failed");
-}
-
-const paymentLink = paystackResponse.data.data.authorization_url;
-
-// Prepare response
-const response = {
-  success: true,
-  transactionId,
-  paymentLink: paymentLink,
-  user: user ? {
-    dkCode: user.dkCode,
-    qrCodeUrl: user.qrCodeUrl,
-    fullname: user.fullname,
-    phoneNumber: user.phoneNumber,
-  } : null,
-  isNewUser,
-};
-
-res.json(response);
+});
     
 app.post("/api/pay-offline", async (req, res) => {
   try {
