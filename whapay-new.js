@@ -432,6 +432,51 @@ app.post("/api/paystack-webhook", async (req, res) => {
   
   res.sendStatus(200);
 });
+
+// ========================
+// Paystack Payment Initialization (Kenya)
+// ========================
+const paystackSecret = process.env.PAYSTACK_SECRET_KEY;
+
+app.post("/api/paystack/initialize", async (req, res) => {
+  try {
+    const { email, amount, metadata, callback_url } = req.body;
+    
+    if (!paystackSecret) {
+      return res.status(500).json({ error: "Paystack secret key not set" });
+    }
+    
+    const response = await axios.post(
+      "https://api.paystack.co/transaction/initialize",
+      {
+        email: email,
+        amount: amount * 100, // Paystack uses kobo
+        currency: "KES",
+        metadata: metadata,
+        callback_url: callback_url || "https://whapay.space/payment-callback"
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${paystackSecret}`,
+          "Content-Type": "application/json"
+        }
+      }
+    );
+    
+    if (!response.data.status) {
+      throw new Error(response.data.message);
+    }
+    
+    res.json({
+      success: true,
+      authorization_url: response.data.data.authorization_url,
+      reference: response.data.data.reference
+    });
+  } catch (error) {
+    console.error("Paystack error:", error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
 // ========== MERCHANT DIRECTORY SAVE ==========
 app.post("/api/directory/save", async (req, res) => {
     try {
