@@ -2358,30 +2358,56 @@ app.post("/api/register-pay", async (req, res) => {
     };
     await db.collection("transactions").add(transactionData);
 
-    // TODO: After Flutterwave approval, replace this mock with actual payment initialization
-    // For now, simulate a payment link
-    const mockPaymentLink = `https://whapay-backend.onrender.com/pay?amount=${amount}&phone=${normalizedPhone}`;
+    // Initialize Paystack transaction
+const paystackSecret = process.env.PAYSTACK_SECRET_KEY;
+if (!paystackSecret) {
+  throw new Error("Paystack secret key not set");
+}
 
-    // Prepare response
-    const response = {
-      success: true,
-      transactionId,
-      paymentLink: mockPaymentLink,
-      user: user ? {
-        dkCode: user.dkCode,
-        qrCodeUrl: user.qrCodeUrl,
-        fullname: user.fullname,
-        phoneNumber: user.phoneNumber,
-      } : null,
-      isNewUser,
-    };
-
-    res.json(response);
-  } catch (error) {
-    console.error("Register-pay error:", error);
-    res.status(500).json({ success: false, error: error.message });
+const paystackResponse = await axios.post(
+  "https://api.paystack.co/transaction/initialize",
+  {
+    email: `${normalizedPhone}@whapay.space`,
+    amount: customerPayAmount * 100, // Paystack uses kobo (cents) – KES 1 = 100 kobo
+    currency: "KES",
+    metadata: {
+      customerName: fullname,
+      customerPhone: normalizedPhone,
+      transactionId: transactionId,
+      type: "registration"
+    },
+    callback_url: "https://whapay.space/payment-callback"
+  },
+  {
+    headers: {
+      Authorization: `Bearer ${paystackSecret}`,
+      "Content-Type": "application/json"
+    }
   }
-});
+);
+
+if (!paystackResponse.data.status) {
+  throw new Error(paystackResponse.data.message || "Paystack initialization failed");
+}
+
+const paymentLink = paystackResponse.data.data.authorization_url;
+
+// Prepare response
+const response = {
+  success: true,
+  transactionId,
+  paymentLink: paymentLink,
+  user: user ? {
+    dkCode: user.dkCode,
+    qrCodeUrl: user.qrCodeUrl,
+    fullname: user.fullname,
+    phoneNumber: user.phoneNumber,
+  } : null,
+  isNewUser,
+};
+
+res.json(response);
+    
 app.post("/api/pay-offline", async (req, res) => {
   try {
     const { merchantCode, customerPhone, customerName, amount, description, paymentMethod } = req.body;
