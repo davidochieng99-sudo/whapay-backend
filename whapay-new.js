@@ -2447,19 +2447,31 @@ app.post("/api/create-link", async (req, res) => {
   }
 });
 
-// Fixed send-sms endpoint (correct headers placement)
+// ========================
+// Send SMS via Twilio
+// ========================
 app.post("/api/send-sms", async (req, res) => {
   try {
     const { to, message } = req.body;
-    if (!process.env.DEXATEL_API_KEY) throw new Error("Dexatel API key not set");
-    const response = await axios.post(
-      "https://api.dexatel.com/v1/messages",
-      { to, from: "Whapay", text: message },
-      { headers: { "X-Dexatel-Key": process.env.DEXATEL_API_KEY, "Content-Type": "application/json" } }
+    if (!process.env.TWILIO_ACCOUNT_SID || !process.env.TWILIO_AUTH_TOKEN) {
+      throw new Error("Twilio credentials not set");
+    }
+    
+    const twilioClient = require('twilio')(
+      process.env.TWILIO_ACCOUNT_SID,
+      process.env.TWILIO_AUTH_TOKEN
     );
-    res.json({ success: true, data: response.data });
+    
+    const response = await twilioClient.messages.create({
+      body: message,
+      to: to,
+      from: process.env.TWILIO_PHONE_NUMBER
+    });
+    
+    res.json({ success: true, sid: response.sid });
   } catch (error) {
-    res.json({ success: false, error: error.response?.data || error.message });
+    console.error("Twilio SMS error:", error.message);
+    res.json({ success: false, error: error.message });
   }
 });
 
