@@ -2481,6 +2481,46 @@ app.post("/api/create-link", async (req, res) => {
 });
 
 // ========================
+// Paystack Webhook
+// ========================
+app.post('/api/paystack-webhook', async (req, res) => {
+  const event = req.body;
+  const secret = process.env.PAYSTACK_SECRET_KEY;
+  
+  // Verify signature (optional but recommended)
+  const signature = req.headers['x-paystack-signature'];
+  
+  if (event.event === 'charge.success') {
+    const reference = event.data.reference;
+    const transactionId = event.data.metadata?.transactionId;
+    const amount = event.data.amount / 100; // Convert from kobo to KES
+    
+    console.log(`✅ Paystack payment successful: ${reference}`);
+    
+    // Find and update transaction in Firestore
+    const transactions = await db.collection("transactions")
+      .where("transactionId", "==", transactionId)
+      .get();
+    
+    if (!transactions.empty) {
+      await transactions.docs[0].ref.update({
+        status: "completed",
+        paystackReference: reference,
+        completedAt: new Date().toISOString()
+      });
+      
+      // Send receipt via SMS or WhatsApp
+      const data = transactions.docs[0].data();
+      if (data.customerPhone) {
+        await sendSMS(data.customerPhone, `✅ Payment of KES ${amount/100} successful!`);
+      }
+    }
+  }
+  
+  res.sendStatus(200);
+});
+
+// ========================
 // Send SMS via Twilio
 // ========================
 app.post("/api/send-sms", async (req, res) => {
