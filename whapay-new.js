@@ -2571,38 +2571,41 @@ app.post("/api/create-link", async (req, res) => {
 // ========================
 app.post('/api/paystack-webhook', async (req, res) => {
   const event = req.body;
-  const secret = process.env.PAYSTACK_SECRET_KEY;
-  
-  // Verify signature (optional but recommended)
-  const signature = req.headers['x-paystack-signature'];
-  
+  const secret = 'sk_test_2b560b4a03e3f91419b72d019c096523f'; // Direct key
+
   if (event.event === 'charge.success') {
     const reference = event.data.reference;
     const transactionId = event.data.metadata?.transactionId;
     const amount = event.data.amount / 100; // Convert from kobo to KES
-    
+
     console.log(`✅ Paystack payment successful: ${reference}`);
-    
-    // Find and update transaction in Firestore
-    const transactions = await db.collection("transactions")
-      .where("transactionId", "==", transactionId)
-      .get();
-    
-    if (!transactions.empty) {
-      await transactions.docs[0].ref.update({
-        status: "completed",
-        paystackReference: reference,
-        completedAt: new Date().toISOString()
-      });
-      
-      // Send receipt via SMS or WhatsApp
-      const data = transactions.docs[0].data();
-      if (data.customerPhone) {
-        await sendSMS(data.customerPhone, `✅ Payment of KES ${amount/100} successful!`);
+
+    // Find and update transaction in Firebase
+    if (transactionId) {
+      const transactions = await db.collection("transactions")
+        .where("transactionId", "==", transactionId)
+        .get();
+
+      if (!transactions.empty) {
+        const transaction = transactions.docs[0];
+        await transaction.ref.update({
+          status: "completed",
+          paystackReference: reference,
+          completedAt: new Date().toISOString()
+        });
+        console.log(`✅ Transaction ${transactionId} updated to completed`);
+
+        // Send receipt via SMS
+        const data = transaction.data();
+        if (data.customerPhone) {
+          await sendSMS(data.customerPhone, `✅ Payment of KES ${amount} successful! Receipt: ${reference}`);
+        }
+      } else {
+        console.log(`⚠️ Transaction not found: ${transactionId}`);
       }
     }
   }
-  
+
   res.sendStatus(200);
 });
 
