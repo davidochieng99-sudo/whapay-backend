@@ -2374,29 +2374,23 @@ app.post("/api/flw-webhook", async (req, res) => {
   }
 });
 
-// Register & Pay in one step (combines user creation and payment initialization)
 app.post("/api/register-pay", async (req, res) => {
   try {
     const { fullname, phoneNumber, amount, paymentMethod, registerUser } = req.body;
 
-    // Validate inputs
     if (!fullname || !phoneNumber || !amount) {
       return res.status(400).json({ success: false, error: "Missing required fields" });
     }
 
-    // ADD KES 50 SERVICE FEE
     const customerPayAmount = amount + 50;
-
-    // Normalize phone number
     let normalizedPhone = phoneNumber.replace(/^0+/, "254");
     if (!normalizedPhone.startsWith("254")) normalizedPhone = "254" + normalizedPhone;
 
-    // Register or get existing user
     let user = null;
     let isNewUser = false;
     const existingUsers = await db.collection("users").where("phoneNumber", "==", normalizedPhone).get();
+    
     if (existingUsers.empty && registerUser === true) {
-      // Create new user
       const dkCode = await getNextDkCode();
       const qrData = `https://whapay-backend.onrender.com/pay?code=${dkCode}`;
       const qrImage = await generateQRCode(qrData);
@@ -2415,13 +2409,10 @@ app.post("/api/register-pay", async (req, res) => {
     } else if (!existingUsers.empty) {
       user = existingUsers.docs[0].data();
       user.id = existingUsers.docs[0].id;
-    } else {
-      user = null;
     }
 
-    // Create a transaction record with status "pending"
     const transactionId = "TXN_" + Date.now();
-    const transactionData = {
+    await db.collection("transactions").add({
       transactionId,
       customerName: fullname,
       customerPhone: normalizedPhone,
@@ -2430,15 +2421,10 @@ app.post("/api/register-pay", async (req, res) => {
       status: "pending",
       createdAt: new Date().toISOString(),
       userCreated: isNewUser,
-    };
-    await db.collection("transactions").add(transactionData);
+    });
 
-    // Initialize Paystack transaction
     const PAYSTACK_SECRET = 'sk_test_dd7bfc8ccdae3b7eda8e0dba3ad37335';
-    if (!paystackSecret) {
-      throw new Error("Paystack secret key not set");
-    }
-
+    
     const paystackResponse = await axios.post(
       "https://api.paystack.co/transaction/initialize",
       {
@@ -2455,23 +2441,21 @@ app.post("/api/register-pay", async (req, res) => {
       },
       {
         headers: {
-          Authorization: `Bearer ${paystackSecret}`,
+          Authorization: `Bearer ${PAYSTACK_SECRET}`,
           "Content-Type": "application/json"
-        }
+        },
+        timeout: 30000
       }
     );
 
-    if (!paystackResponse.data.status) {
-      throw new Error(paystackResponse.data.message || "Paystack initialization failed");
+    if (!paystackResponse.data || !paystackResponse.data.status) {
+      throw new Error(paystackResponse.data?.message || "Paystack initialization failed");
     }
 
-    const paymentLink = paystackResponse.data.data.authorization_url;
-
-    // Prepare response
-    const response = {
+    res.json({
       success: true,
       transactionId,
-      paymentLink: paymentLink,
+      paymentLink: paystackResponse.data.data.authorization_url,
       user: user ? {
         dkCode: user.dkCode,
         qrCodeUrl: user.qrCodeUrl,
@@ -2479,11 +2463,9 @@ app.post("/api/register-pay", async (req, res) => {
         phoneNumber: user.phoneNumber,
       } : null,
       isNewUser,
-    };
-
-    res.json(response);
+    });
   } catch (error) {
-    console.error("Register-pay error:", error);
+    console.error("Register-pay error:", error.response?.data || error.message);
     res.status(500).json({ success: false, error: error.message });
   }
 });
