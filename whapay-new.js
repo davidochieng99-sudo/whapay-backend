@@ -397,7 +397,7 @@ app.post("/api/directory/verify", async (req, res) => {
 // ========================
 app.post('/api/paystack-webhook', async (req, res) => {
   const event = req.body;
-  const secret = 'sk_test_2b560b4a03e3f91419b72d019c096523f';
+  const PAYSTACK_SECRET = 'sk_test_dd7bfc8ccdae3b7eda8e0dba3ad37335';
 
   if (event.event === 'charge.success') {
     const reference = event.data.reference;
@@ -2553,48 +2553,6 @@ app.post("/api/create-link", async (req, res) => {
   }
 });
 
-// ========================
-// Paystack Webhook
-// ========================
-app.post('/api/paystack-webhook', async (req, res) => {
-  const event = req.body;
-  const secret = 'sk_test_2b560b4a03e3f91419b72d019c096523f'; // Direct key
-
-  if (event.event === 'charge.success') {
-    const reference = event.data.reference;
-    const transactionId = event.data.metadata?.transactionId;
-    const amount = event.data.amount / 100; // Convert from kobo to KES
-
-    console.log(`✅ Paystack payment successful: ${reference}`);
-
-    // Find and update transaction in Firebase
-    if (transactionId) {
-      const transactions = await db.collection("transactions")
-        .where("transactionId", "==", transactionId)
-        .get();
-
-      if (!transactions.empty) {
-        const transaction = transactions.docs[0];
-        await transaction.ref.update({
-          status: "completed",
-          paystackReference: reference,
-          completedAt: new Date().toISOString()
-        });
-        console.log(`✅ Transaction ${transactionId} updated to completed`);
-
-        // Send receipt via SMS
-        const data = transaction.data();
-        if (data.customerPhone) {
-          await sendSMS(data.customerPhone, `✅ Payment of KES ${amount} successful! Receipt: ${reference}`);
-        }
-      } else {
-        console.log(`⚠️ Transaction not found: ${transactionId}`);
-      }
-    }
-  }
-
-  res.sendStatus(200);
-});
 
 // ========================
 // Send SMS via Twilio
