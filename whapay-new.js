@@ -395,41 +395,39 @@ app.post("/api/directory/verify", async (req, res) => {
 // ========================
 // Paystack Webhook
 // ========================
-app.post("/api/paystack-webhook", async (req, res) => {
+app.post('/api/paystack-webhook', async (req, res) => {
   const event = req.body;
-  const secret = paystackSecret;
-  
-  // Verify signature (optional)
-  const signature = req.headers['x-paystack-signature'];
-  
+  const secret = 'sk_test_2b560b4a03e3f91419b72d019c096523f';
+
   if (event.event === 'charge.success') {
     const reference = event.data.reference;
+    const transactionId = event.data.metadata?.transactionId;
     const amount = event.data.amount / 100;
-    const metadata = event.data.metadata;
-    
+
     console.log(`✅ Paystack payment successful: ${reference}`);
-    
-    // Update your transaction in Firestore
-    if (metadata && metadata.transactionId) {
+
+    if (transactionId) {
       const transactions = await db.collection("transactions")
-        .where("transactionId", "==", metadata.transactionId)
+        .where("transactionId", "==", transactionId)
         .get();
-      
+
       if (!transactions.empty) {
-        await transactions.docs[0].ref.update({
+        const transaction = transactions.docs[0];
+        await transaction.ref.update({
           status: "completed",
           paystackReference: reference,
           completedAt: new Date().toISOString()
         });
-        
-        // Send receipt via SMS/WhatsApp
-        if (metadata.customerPhone) {
-          await sendSMS(metadata.customerPhone, `✅ Payment of KES ${amount} successful!`);
+        console.log(`✅ Transaction ${transactionId} updated`);
+
+        const data = transaction.data();
+        if (data.customerPhone) {
+          await sendSMS(data.customerPhone, `✅ Payment of KES ${amount} successful!`);
         }
       }
     }
   }
-  
+
   res.sendStatus(200);
 });
 
