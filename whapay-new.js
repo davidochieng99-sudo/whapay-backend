@@ -434,7 +434,7 @@ app.post('/api/paystack-webhook', async (req, res) => {
 // ========================
 // Paystack Payment Initialization (Kenya)
 // ========================
-const paystackSecret = process.env.PAYSTACK_SECRET_KEY;
+const paystackSecret = 'sk_test_2b560b4a03e3f91419b72d019c096523f';
 
 app.post("/api/paystack/initialize", async (req, res) => {
   try {
