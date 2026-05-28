@@ -2376,17 +2376,6 @@ app.post("/api/flw-webhook", async (req, res) => {
   }
 });
 
-// ---------- API endpoints ----------
-app.post("/api/register", async (req, res) => {
-  try {
-    const { phoneNumber, fullname, userType } = req.body;
-    const user = await registerOrGetUser(phoneNumber, fullname, userType);
-    res.json({ success: true, user });
-  } catch (error) {
-    res.json({ success: false, error: error.message });
-  }
-});
-
 // Register & Pay in one step (combines user creation and payment initialization)
 app.post("/api/register-pay", async (req, res) => {
   try {
@@ -2438,7 +2427,7 @@ app.post("/api/register-pay", async (req, res) => {
       transactionId,
       customerName: fullname,
       customerPhone: normalizedPhone,
-      amount: customerPayAmount,  // ← USE THE AMOUNT WITH FEE
+      amount: customerPayAmount,
       paymentMethod,
       status: "pending",
       createdAt: new Date().toISOString(),
@@ -2447,7 +2436,7 @@ app.post("/api/register-pay", async (req, res) => {
     await db.collection("transactions").add(transactionData);
 
     // Initialize Paystack transaction
-    const paystackSecret = process.env.PAYSTACK_SECRET_KEY;
+    const paystackSecret = 'sk_test_2b560b4a03e3f91419b72d019c096523f';
     if (!paystackSecret) {
       throw new Error("Paystack secret key not set");
     }
@@ -2456,7 +2445,7 @@ app.post("/api/register-pay", async (req, res) => {
       "https://api.paystack.co/transaction/initialize",
       {
         email: `${normalizedPhone}@whapay.space`,
-        amount: customerPayAmount * 100, // Paystack uses kobo (cents) – KES 1 = 100 kobo
+        amount: customerPayAmount * 100,
         currency: "KES",
         metadata: {
           customerName: fullname,
