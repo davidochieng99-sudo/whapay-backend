@@ -2423,7 +2423,7 @@ app.post("/api/register-pay", async (req, res) => {
       userCreated: isNewUser,
     });
 
-    const PAYSTACK_SECRET = 'sk_test_dd7bfc8ccdae3b7eda8e0dba3ad37335';
+    const PAYSTACK_SECRET = process.env.PAYSTACK_SECRET_KEY;
     
     const paystackResponse = await axios.post(
       "https://api.paystack.co/transaction/initialize",
