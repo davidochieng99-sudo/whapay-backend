@@ -397,7 +397,7 @@ app.post("/api/directory/verify", async (req, res) => {
 // ========================
 app.post('/api/paystack-webhook', async (req, res) => {
   const event = req.body;
-  const PAYSTACK_SECRET = 'sk_test_dd7bfc8ccdae3b7eda8e0dba3ad37335';
+  const PAYSTACK_SECRET = process.env.PAYSTACK_SECRET_KEY;
 
   if (event.event === 'charge.success') {
     const reference = event.data.reference;
